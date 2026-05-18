@@ -1,0 +1,355 @@
+:root {
+  --ls-bg: #fff7fb;
+  --ls-card: rgba(255, 255, 255, 0.9);
+  --ls-pink: #ec5c9f;
+  --ls-pink-dark: #c93678;
+  --ls-pink-soft: #ffe3ef;
+  --ls-pink-milk: #fff1f7;
+  --ls-border: #f4c9dc;
+  --ls-text: #28172f;
+  --ls-muted: #8b748a;
+  --ls-green: #28a86b;
+  --ls-shadow: 0 14px 36px rgba(220, 84, 145, 0.14);
+}
+
+.loading-screen-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--ls-bg);
+  overflow-y: auto;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--ls-text);
+  /* The original CSS uses #fff0f7 for body, so let's match */
+  background: #fff0f7;
+}
+
+.loading-screen {
+  width: 100%;
+  max-width: 430px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top, rgba(255, 205, 226, 0.75), transparent 32%),
+    linear-gradient(180deg, #fffafd 0%, #fff0f7 100%);
+}
+
+.loading-screen * {
+  box-sizing: border-box;
+}
+
+.ls-mobile-header {
+  height: 72px;
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.ls-mobile-header h1 {
+  margin: 0;
+  text-align: center;
+  font-size: 20px;
+  color: var(--ls-pink-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: bold;
+}
+
+.ls-mobile-header p {
+  margin: 4px 0 0;
+  text-align: center;
+  color: var(--ls-muted);
+  font-size: 12px;
+}
+
+.ls-back-btn,
+.ls-shield-btn {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--ls-border);
+  border-radius: 15px;
+  background: var(--ls-card);
+  color: var(--ls-pink-dark);
+  font-size: 22px;
+  box-shadow: var(--ls-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.ls-stage-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.ls-stage-card {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid var(--ls-border);
+  background: var(--ls-card);
+  box-shadow: var(--ls-shadow);
+}
+
+.ls-stage-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.ls-stage-card p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ls-muted);
+}
+
+.ls-stage-number {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #f06aa7, #d83f84);
+  color: white;
+  font-weight: 900;
+  font-size: 14px;
+}
+
+.ls-stage-card.done span.icon {
+  color: var(--ls-green);
+  font-weight: 900;
+}
+
+.ls-spinner {
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--ls-pink-soft);
+  border-top-color: var(--ls-pink);
+  border-radius: 50%;
+  animation: ls-spin 1s linear infinite;
+}
+
+.ls-main-card,
+.ls-commit-card,
+.ls-policy-card,
+.ls-timeline-card,
+.ls-stats-card,
+.ls-warning-card {
+  margin-top: 14px;
+  background: var(--ls-card);
+  border: 1px solid var(--ls-border);
+  border-radius: 24px;
+  padding: 18px;
+  box-shadow: var(--ls-shadow);
+}
+
+.ls-main-card {
+  text-align: center;
+  padding: 26px 18px;
+}
+
+.ls-main-card h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--ls-pink-dark);
+  text-transform: uppercase;
+  font-weight: bold;
+}
+
+.ls-desc {
+  margin: 12px auto 22px;
+  max-width: 320px;
+  color: var(--ls-text);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.ls-circle-progress {
+  width: 210px;
+  height: 210px;
+  border-radius: 50%;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.ls-circle-progress::before {
+  content: "";
+  position: absolute;
+  inset: 18px;
+  border-radius: 50%;
+  background: #fffafd;
+}
+
+.ls-circle-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 6px;
+  text-align: center;
+}
+
+.ls-circle-inner span {
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ls-text);
+  margin: 0;
+}
+
+.ls-circle-inner strong {
+  font-size: 42px;
+  line-height: 1;
+  color: var(--ls-pink-dark);
+  margin: 0;
+  font-weight: bold;
+}
+
+.ls-circle-inner small {
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--ls-muted);
+  font-weight: 700;
+  margin: 0;
+}
+
+.ls-commit-card h3,
+.ls-policy-card h3,
+.ls-timeline-card h3,
+.ls-stats-card h3 {
+  margin: 0 0 12px;
+  color: var(--ls-pink-dark);
+  font-size: 15px;
+  text-transform: uppercase;
+  font-weight: bold;
+}
+
+.ls-commit-card p {
+  margin: 0;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.ls-policy-card ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ls-policy-card li {
+  position: relative;
+  padding-left: 24px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.ls-policy-card li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--ls-pink);
+  font-weight: 900;
+}
+
+.ls-timeline-item {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid #f7dce8;
+}
+
+.ls-timeline-item:last-child {
+  border-bottom: none;
+}
+
+.ls-timeline-item span {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f4d4e4;
+  display: block;
+}
+
+.ls-timeline-item.done span {
+  background: var(--ls-pink);
+}
+
+.ls-timeline-item.active span {
+  background: var(--ls-pink);
+  box-shadow: 0 0 0 6px rgba(236, 92, 159, 0.14);
+}
+
+.ls-timeline-item p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ls-timeline-item small {
+  color: var(--ls-muted);
+  font-size: 11px;
+}
+
+.ls-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f7dce8;
+}
+
+.ls-row:last-child {
+  border-bottom: none;
+}
+
+.ls-row span {
+  color: var(--ls-muted);
+  font-size: 13px;
+}
+
+.ls-row strong {
+  font-size: 13px;
+  text-align: right;
+  font-weight: bold;
+}
+
+.ls-warning-card {
+  color: var(--ls-pink-dark);
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #fff1f7;
+  text-align: center;
+}
+
+.ls-cancel-btn {
+  width: 100%;
+  margin-top: 14px;
+  margin-bottom: 30px;
+  padding: 14px;
+  border-radius: 20px;
+  border: none;
+  background: white;
+  color: var(--ls-pink-dark);
+  font-weight: bold;
+  font-size: 15px;
+  box-shadow: var(--ls-shadow);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+@keyframes ls-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

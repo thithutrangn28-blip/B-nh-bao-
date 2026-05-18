@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "Novel": {
+      "title": "Novel",
+      "description": "A novel entity",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "storyName": { "type": "string" },
+        "characterName": { "type": "string" },
+        "genre": { "type": "string" },
+        "chapterLength": { "type": "number" },
+        "coverImage": { "type": "string" },
+        "editorBackgroundImage": { "type": "string" },
+        "npcGlobalBackground": { "type": "string" },
+        "lastModified": { "type": "number" },
+        "userPlot": { "type": "string" },
+        "nextChapterLength": { "type": "number" },
+        "botCharInfo": { "type": "string" },
+        "userCharInfo": { "type": "string" },
+        "writingPrompt": { "type": "string" },
+        "npcCount": { "type": "number" }
+      },
+      "required": ["id", "storyName"]
+    },
+    "KikokoStory": {
+      "title": "KikokoStory",
+      "description": "A KikokoStory entity",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "plot": { "type": "string" },
+        "botChar": { "type": "string" },
+        "userChar": { "type": "string" },
+        "prompt": { "type": "string" },
+        "memory": { "type": "string" },
+        "style": { "type": "string" },
+        "background": { "type": "string" },
+        "charLimit": { "type": "number" },
+        "tokenLimit": { "type": "number" },
+        "targetCharCount": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "title"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/novels/{novelId}": {
+      "schema": { "$ref": "Novel" },
+      "description": "Novels collection"
+    },
+    "/users/{userId}/stories/{storyId}": {
+      "schema": { "$ref": "KikokoStory" },
+      "description": "Kikoko stories collection"
+    }
+  }
+}

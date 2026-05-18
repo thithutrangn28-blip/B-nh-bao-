@@ -1,0 +1,21 @@
+{
+  "name": "Sách Thế Giới",
+  "short_name": "Sách Thế Giới",
+  "description": "Ứng dụng hẹn hò và kết nối NPC",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#F3B4C2",
+  "icons": [
+    {
+      "src": "https://i.postimg.cc/59vrSS1b/0c95bb2ec9be4a378f532e76a106887a-(1).jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "https://i.postimg.cc/59vrSS1b/0c95bb2ec9be4a378f532e76a106887a-(1).jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ]
+}

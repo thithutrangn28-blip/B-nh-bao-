@@ -1,0 +1,21 @@
+{
+  "name": "YouTube của Koko",
+  "short_name": "Koko YT",
+  "description": "YouTube của Koko",
+  "start_url": "./koko-youtube.html",
+  "display": "standalone",
+  "background_color": "#FAF9F6",
+  "theme_color": "#F3B4C2",
+  "icons": [
+    {
+      "src": "https://i.postimg.cc/59vrSS1b/0c95bb2ec9be4a378f532e76a106887a-(1).jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "https://i.postimg.cc/59vrSS1b/0c95bb2ec9be4a378f532e76a106887a-(1).jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ]
+}

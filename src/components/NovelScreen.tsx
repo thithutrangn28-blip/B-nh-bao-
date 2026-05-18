@@ -1,0 +1,2350 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Settings, 
+  Send, 
+  BookOpen, 
+  User, 
+  Sparkles, 
+  ChevronLeft, 
+  Plus, 
+  Trash2, 
+  Image as ImageIcon, 
+  Save,
+  Library,
+  X,
+  Menu,
+  ArrowLeft,
+  Type,
+  Heart,
+  Rabbit,
+  MessageSquare,
+  Users,
+  Book,
+  Bot
+} from 'lucide-react';
+import { auth } from '../firebase';
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+
+import { compressImage } from '../utils/imageUtils';
+import { getAllStories, saveStory, deleteStory as deleteStoryFromDB, clearAllStories } from '../utils/db';
+import { Novel, Chapter, NPCComment } from '../types';
+import { WRITING_STYLES } from '../constants/writingStyles';
+
+interface NovelScreenProps {
+  onBack: () => void;
+}
+
+const DEFAULT_COVER = 'https://picsum.photos/seed/novel/1920/1080';
+
+class ControllerManager {
+  controllers: Map<string, AbortController>;
+  constructor() { this.controllers = new Map(); }
+  
+  has(scopeId: string) { return this.controllers.has(scopeId); }
+  
+  createController(scopeId: string) {
+    if (this.controllers.has(scopeId)) {
+      this.controllers.get(scopeId)?.abort('Replaced by new request');
+    }
+    const ctrl = new AbortController();
+    this.controllers.set(scopeId, ctrl);
+    return ctrl;
+  }
+  
+  abort(scopeId: string, reason = 'Manual cancel') {
+    const ctrl = this.controllers.get(scopeId);
+    if (ctrl && !ctrl.signal.aborted) ctrl.abort(reason);
+    this.controllers.delete(scopeId);
+  }
+}
+const globalControllerManager = new ControllerManager();
+
+function truncateSmart(text: string, maxTokens: number) {
+  if (!text) return '';
+  const maxChars = maxTokens * 3.5;
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars * 0.3) + 
+         '\n[... đoạn giữa được lược ...]\n' + 
+         text.slice(-maxChars * 0.7);
+}
+
+const NovelScreen: React.FC<NovelScreenProps> = ({ onBack }) => {
+  // Library State
+  const [novels, setNovels] = useState<Novel[]>([]);
+  const [currentNovelId, setCurrentNovelId] = useState<string | null>(() => localStorage.getItem('novel_current_id'));
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const handleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error('Login error:', error);
+      setError('Lỗi đăng nhập. Vui lòng thử lại.');
+    }
+  };
+  
+  // UI States
+  const [showSettings, setShowSettings] = useState(false);
+  const [showDrawer, setShowDrawer] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  // Streaming Refs
+  const fullTextRef = useRef('');
+  const displayedTextRef = useRef('');
+  const isApiDoneRef = useRef(false);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const displayIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const [galleryBackground, setGalleryBackground] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [confirmConfig, setConfirmConfig] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [streamingContent, setStreamingContent] = useState('');
+  const [estimatedTime, setEstimatedTime] = useState<number | null>(null);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  
+  // Current Novel State (Derived)
+  const currentNovel = novels.find(n => n.id === currentNovelId);
+
+  useEffect(() => {
+    if (currentNovelId) {
+      localStorage.setItem('novel_current_id', currentNovelId);
+    } else {
+      localStorage.removeItem('novel_current_id');
+    }
+  }, [currentNovelId]);
+
+  const [fontSize, setFontSize] = useState(currentNovel?.settings?.fontSize || 24);
+  const [generatedTokens, setGeneratedTokens] = useState(0);
+  const [requestedTokens, setRequestedTokens] = useState(32000);
+  const [previewChapter, setPreviewChapter] = useState<Chapter | null>(null);
+  
+  useEffect(() => {
+    if (currentNovel?.settings?.fontSize && currentNovel.settings.fontSize !== fontSize) {
+      setFontSize(currentNovel.settings.fontSize);
+    }
+  }, [currentNovelId]);
+
+  const updateFontSize = (newSize: number) => {
+    setFontSize(newSize);
+    updateSettings({ fontSize: newSize });
+  };
+  const [userPlot, setUserPlot] = useState('');
+  const [nextChapterLength, setNextChapterLength] = useState<number | ''>('');
+  const [showDirectionModal, setShowDirectionModal] = useState(false);
+  const [selectedDirection, setSelectedDirection] = useState('');
+  
+  useEffect(() => {
+    console.log('NovelScreen: auth.currentUser changed:', auth.currentUser);
+  }, [auth.currentUser]);
+
+  // Missing states
+  const [npcComments, setNpcComments] = useState<NPCComment[]>([]);
+  const [isGeneratingGossip, setIsGeneratingGossip] = useState(false);
+  const [npcProgress, setNpcProgress] = useState(0);
+  const [showPlotPrompt, setShowPlotPrompt] = useState(false);
+  const [showGossipGroup, setShowGossipGroup] = useState(false);
+
+  const directions = ['Lãng mạn', 'Ghen tuông', 'Kịch tính', 'NSFW'];
+  
+  const novelAbortControllerRef = useRef<AbortController | null>(null);
+  const gossipAbortControllerRef = useRef<AbortController | null>(null);
+
+  // Current Novel State (Derived) moved up to fix TDZ
+
+  // Persistence with Firebase and IndexedDB
+  useEffect(() => {
+    const loadLocalData = async () => {
+      try {
+        const localNovels = await getAllStories();
+        if (localNovels.length > 0) {
+          console.log('NovelScreen: Loaded from IndexedDB:', localNovels);
+          // Sort by lastModified descending
+          localNovels.sort((a, b) => b.lastModified - a.lastModified);
+          setNovels(localNovels);
+        }
+        setLoading(false);
+      } catch (e) {
+        console.error('Failed to load from IndexedDB', e);
+        setLoading(false);
+      }
+    };
+
+    loadLocalData();
+
+    const authUnsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthLoading(false);
+    });
+
+    return () => {
+      authUnsubscribe();
+    };
+  }, []);
+
+  const saveNovelToFirebase = async (novel: Novel) => {
+    console.log('saveNovelToFirebase called, auth.currentUser:', auth.currentUser);
+    
+    // Always save to IndexedDB first for immediate persistence
+    try {
+      await saveStory(novel);
+    } catch (e) {
+      console.error('Failed to save to IndexedDB', e);
+    }
+  };
+
+  const saveChapterToFirebase = async (novelId: string, chapter: Chapter) => {
+    // No longer saving to Firebase
+  };
+
+  const deleteChapterFromFirebase = async (novelId: string, chapterId: string) => {
+    // No longer deleting from Firebase
+  };
+
+  const deleteNovelFromFirebase = async (id: string) => {
+    // Delete from IndexedDB
+    try {
+      await deleteStoryFromDB(id);
+    } catch (e) {
+      console.error('Failed to delete from IndexedDB', e);
+    }
+  };
+
+  // Auto-clear toasts
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  useEffect(() => {
+    if (error) {
+      const timer = setTimeout(() => setError(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
+
+  // Reset editor state when switching novels
+  useEffect(() => {
+    // Always clear content and editing ID when switching
+    setContent('');
+    setEditingChapterId(null);
+    setNpcComments([]);
+
+    if (currentNovelId) {
+      const novel = novels.find(n => n.id === currentNovelId);
+      if (novel) {
+        setUserPlot(novel.userPlot || '');
+        setNextChapterLength(novel.nextChapterLength ?? '');
+      }
+    } else {
+      setUserPlot('');
+      setNextChapterLength('');
+    }
+  }, [currentNovelId]);
+
+  // Persist plot and length changes with debounce
+  useEffect(() => {
+    if (currentNovelId) {
+      const novel = novels.find(n => n.id === currentNovelId);
+      if (novel && (novel.userPlot !== userPlot || novel.nextChapterLength !== nextChapterLength)) {
+        const timer = setTimeout(() => {
+          updateCurrentNovel({ userPlot, nextChapterLength });
+        }, 1000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [userPlot, nextChapterLength, currentNovelId]);
+
+  // Fetch Models
+  const fetchModels = async () => {
+    if (!currentNovel) return;
+    const { proxyEndpoint, proxyKey } = currentNovel.settings || {};
+    if (!proxyEndpoint || !proxyKey) {
+      setError('Vui lòng nhập đầy đủ Proxy Endpoint và API Key.');
+      return;
+    }
+    
+    setIsFetchingModels(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+    try {
+      setError(null);
+      let url = proxyEndpoint.trim();
+      if (!url.startsWith('http')) url = 'https://' + url;
+      if (url.endsWith('/')) url = url.slice(0, -1);
+      
+      const modelsUrl = url.toLowerCase().endsWith('/v1') 
+        ? `${url}/models` 
+        : url.toLowerCase().includes('/v1/') 
+          ? `${url.split('/v1/')[0]}/v1/models`
+          : `${url}/v1/models`;
+
+      const response = await fetch(modelsUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          'Authorization': `Bearer ${proxyKey}`,
+          'Accept': 'application/json'
+        }
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `Lỗi API: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const rawModels = data.data || data.models || [];
+      const modelIds = rawModels.map((m: any) => (typeof m === 'string' ? m : m.id));
+      setAvailableModels(modelIds);
+      if (modelIds.length > 0) {
+        setSuccessMessage(`Đã tải thành công ${modelIds.length} model.`);
+      } else {
+        setError('Không tìm thấy model nào trong phản hồi từ API.');
+      }
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      console.error('Error fetching models:', err);
+      if (err.name === 'AbortError') {
+        setError('Lỗi: Kết nối quá hạn khi tải danh sách model.');
+      } else {
+        setError(`Lỗi kết nối API: ${err.message}`);
+      }
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  // Novel Management
+  const createNewNovel = async () => {
+    console.log('createNewNovel called, auth.currentUser:', auth.currentUser);
+    if (!auth.currentUser) {
+      setError('Bạn cần đăng nhập để tạo sổ mới.');
+      handleLogin();
+      return;
+    }
+    const newNovel: Novel = {
+      id: Date.now().toString(),
+      storyName: 'Tiểu thuyết mới',
+      characterName: '',
+      genre: '',
+      chapterLength: 1000,
+      chapters: [],
+      coverImage: '',
+      editorBackgroundImage: '',
+      npcGlobalBackground: '',
+      lastModified: Date.now(),
+      settings: {
+        proxyEndpoint: '',
+        proxyKey: '',
+        model: '',
+        isSetupComplete: false,
+        useStreaming: true,
+        extremeCapacityMode: false,
+        maxTokens: 32000,
+        timeout: 15
+      },
+      botCharInfo: '',
+      userCharInfo: '',
+      writingPrompt: '',
+      npcCount: 500,
+      longTermMemory: '',
+      characterMemory: '',
+    };
+    console.log('Saving novel to Firebase:', newNovel);
+    await saveNovelToFirebase(newNovel);
+    setCurrentNovelId(newNovel.id);
+    setShowSettings(true);
+  };
+
+  const deleteNovel = (id: string) => {
+    setNovels(prev => prev.filter(n => n.id !== id));
+    deleteNovelFromFirebase(id);
+    if (currentNovelId === id) setCurrentNovelId(null);
+    setDeleteConfirmId(null);
+  };
+
+  const updateCurrentNovel = (updates: Partial<Novel>) => {
+    if (!currentNovelId || !currentNovel) return;
+    const updatedNovel = { ...currentNovel, ...updates, lastModified: Date.now() };
+    
+    // Optimistic UI update
+    setNovels(prev => prev.map(n => n.id === currentNovelId ? updatedNovel : n));
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveNovelToFirebase(updatedNovel);
+    }, 1000);
+  };
+
+  const updateSettings = (updates: Partial<Novel['settings']>) => {
+    if (!currentNovel) return;
+    const updatedNovel = {
+      ...currentNovel,
+      settings: { ...currentNovel.settings, ...updates },
+      lastModified: Date.now()
+    };
+
+    // Optimistic UI update
+    setNovels(prev => prev.map(n => n.id === currentNovelId ? updatedNovel : n));
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveNovelToFirebase(updatedNovel);
+    }, 1000);
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadType, setUploadType] = useState<'cover' | 'editorBg' | 'npcBg' | 'galleryBackground' | null>(null);
+
+  const handleImageUrl = (type: 'cover' | 'editorBg' | 'npcBg' | 'galleryBackground') => {
+    setUploadType(type);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && uploadType) {
+      try {
+        const compressed = await compressImage(file);
+        if (uploadType === 'cover') updateCurrentNovel({ coverImage: compressed });
+        else if (uploadType === 'editorBg') updateCurrentNovel({ editorBackgroundImage: compressed });
+        else if (uploadType === 'npcBg') updateCurrentNovel({ npcGlobalBackground: compressed });
+        else if (uploadType === 'galleryBackground') {
+          setGalleryBackground(compressed);
+        }
+      } catch (err) {
+        console.error("Image upload failed", err);
+        setError("Lỗi tải ảnh. Vui lòng thử lại.");
+      }
+    }
+    if (e.target) e.target.value = '';
+    setUploadType(null);
+  };
+
+  // Editor Logic
+  const [content, setContent] = useState('');
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'setup' | 'editor'>('setup');
+
+  const handleGenerate = async () => {
+    if (!currentNovel) return;
+
+    // Check for unsaved changes before generating new content
+    if (content.trim()) {
+      let isUnsaved = false;
+      if (editingChapterId) {
+        const savedChapter = currentNovel.chapters.find(c => c.id === editingChapterId);
+        if (savedChapter && savedChapter.content !== content) {
+          isUnsaved = true;
+        }
+      } else {
+        isUnsaved = true;
+      }
+      
+      if (isUnsaved) {
+        setConfirmConfig({
+          title: 'Nội dung chưa lưu',
+          message: 'Bạn có nội dung chưa lưu. Nếu tiếp tục sáng tác chương mới, nội dung hiện tại sẽ bị ghi đè. Bạn có muốn tiếp tục?',
+          onConfirm: () => {
+            setConfirmConfig(null);
+            proceedWithGeneration();
+          }
+        });
+        return;
+      }
+    }
+
+    proceedWithGeneration();
+  };
+
+  const [countdownTime, setCountdownTime] = useState<number | null>(null);
+
+  const proceedWithGeneration = async (mode: 'new_chapter' | 'continue_same_chapter' = 'new_chapter', direction?: string) => {
+    if (!currentNovel) return;
+    const { proxyEndpoint, proxyKey, model, useStreaming = true, extremeCapacityMode = false } = currentNovel.settings || {};
+    if (!proxyEndpoint || !proxyKey || !model) {
+      setError('Vui lòng hoàn tất cài đặt API.');
+      setShowSettings(true);
+      setActiveTab('setup');
+      return;
+    }
+
+    if (globalControllerManager.has(currentNovel.id)) {
+       globalControllerManager.abort(currentNovel.id, 'Replaced by new request');
+    }
+
+    setIsGenerating(true);
+    setError(null);
+    if (mode === 'new_chapter') {
+      setContent('');
+      setStreamingContent('');
+      fullTextRef.current = '';
+      displayedTextRef.current = '';
+      setEditingChapterId(null);
+    } else {
+      setStreamingContent(content);
+      fullTextRef.current = content;
+      displayedTextRef.current = content;
+    }
+    isApiDoneRef.current = false;
+    setGeneratedTokens(Math.floor(fullTextRef.current.length / 4));
+    setRequestedTokens(currentNovel.settings.maxTokens || 32000);
+    setActiveTab('editor');
+
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (displayIntervalRef.current) clearInterval(displayIntervalRef.current);
+
+    const userTimeoutMinutes = currentNovel.settings.timeout || 15;
+    const userTimeoutMs = userTimeoutMinutes * 60 * 1000;
+    let remainingTimeMs = userTimeoutMs;
+    
+    setEstimatedTime(userTimeoutMinutes);
+    setCountdownTime(userTimeoutMinutes * 60);
+
+    let timerStarted = false;
+
+    const startTimers = () => {
+      if (timerStarted) return;
+      timerStarted = true;
+      
+      const startTime = Date.now();
+      
+      countdownIntervalRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, userTimeoutMs - elapsed);
+        setCountdownTime(Math.ceil(remaining / 1000));
+        remainingTimeMs = remaining;
+        
+        if (remaining <= 0) {
+          clearInterval(countdownIntervalRef.current!);
+          clearInterval(displayIntervalRef.current!);
+          setIsGenerating(false);
+          if (fullTextRef.current) {
+            setContent(fullTextRef.current);
+            setStreamingContent('');
+          }
+          globalControllerManager.abort(currentNovel.id, 'TIMEOUT');
+        }
+      }, 1000);
+
+      displayIntervalRef.current = setInterval(() => {
+        const remainingChars = fullTextRef.current.length - displayedTextRef.current.length;
+        
+        if (isApiDoneRef.current) {
+          if (remainingChars > 0) {
+            const charsToAdd = Math.max(5, Math.ceil(remainingChars / (remainingTimeMs / 50)));
+            displayedTextRef.current += fullTextRef.current.slice(displayedTextRef.current.length, displayedTextRef.current.length + charsToAdd);
+            setStreamingContent(displayedTextRef.current);
+          } else {
+            clearInterval(countdownIntervalRef.current!);
+            clearInterval(displayIntervalRef.current!);
+            setIsGenerating(false);
+            setContent(fullTextRef.current);
+            setStreamingContent('');
+            setCountdownTime(null);
+          }
+        } else {
+          if (remainingChars > 0) {
+             const charsToAdd = Math.max(1, Math.ceil(remainingChars / 10)); 
+             displayedTextRef.current += fullTextRef.current.slice(displayedTextRef.current.length, displayedTextRef.current.length + charsToAdd);
+             setStreamingContent(displayedTextRef.current);
+          }
+        }
+        setGeneratedTokens(Math.floor(displayedTextRef.current.length / 4));
+      }, 50);
+    };
+
+    const novelAbortController = globalControllerManager.createController(currentNovel.id);
+
+    try {
+      // Nhóm C - Memory Hierarchy Builder
+      let memoryContextBuilder = `[👤 THIẾT LẬP NHÂN VẬT - BẮT BUỘC TUÂN THỦ]\nUser: ${currentNovel.userCharInfo}\nBot: ${currentNovel.botCharInfo}\n\n`;
+      let storyOpening = `[📖 CỐT TRUYỆN MỞ ĐẦU]\n${currentNovel.writingPrompt}\n\n`;
+      
+      const totalChapters = currentNovel.chapters.length;
+      let shortTerm = currentNovel.longTermMemory || '';
+      let longTerm = '';
+      
+      let chN1Text = '';
+      let chN2Text = '';
+      if (totalChapters > 0) {
+        chN1Text = currentNovel.chapters[totalChapters - 1]?.content || '';
+      }
+      if (totalChapters > 1) {
+        chN2Text = currentNovel.chapters[totalChapters - 2]?.content || '';
+      }
+      
+      const truncatedChN2 = chN2Text ? `[⭐ CHƯƠNG N-2 - PHẢI ĐỌC ĐỂ NỐI TIẾP]\n${truncateSmart(chN2Text, 8000)}\n[--- HẾT CHƯƠNG N-2 ---]\n\n` : '';
+      const truncatedChN1 = `[⭐⭐ CHƯƠNG N-1 - GẦN NHẤT - BẮT BUỘC NỐI TIẾP]\n${truncateSmart(chN1Text, 12000)}\n[--- HẾT CHƯƠNG N-1 ---]\n\n`;
+
+      const memoryContent = `${memoryContextBuilder}${storyOpening}${truncatedChN2}${truncatedChN1}[📝 MEMORY NGẮN HẠN]\n${shortTerm}\n\n[📚 MEMORY DÀI HẠN]\n${longTerm}`;
+
+      // Hướng dẫn hệ thống (Master Prompt v3.0 - Bộ Quy Chuẩn Toàn Diện)
+      const systemInstruction = `═══════════════════════════════════════════════════════════
+KIKOKO NOVEL WRITING SYSTEM v3.0
+Áp dụng cho mọi chương tiểu thuyết tạo bởi tính năng này
+═══════════════════════════════════════════════════════════
+
+[VAI TRÒ CỦA BẠN]
+Bạn là TIỂU THUYẾT GIA chuyên nghiệp viết tiểu thuyết tình yêu dài kỳ. Bạn KHÔNG phải chatbot, KHÔNG phải người kể chuyện cho ai nghe, KHÔNG phải AI trả lời câu hỏi.
+Bạn là người DỆT NÊN một thế giới văn học bằng ngôi thứ 3, dùng ngòi bút để vẽ ra cuộc sống của các nhân vật để người đọc CẢM NHẬN.
+
+[PHẦN A: NGÔI KỂ & GÓC NHÌN]
+- Ngôi kể: BẮT BUỘC dùng ngôi thứ 3 (He/She/Họ/Tên nhân vật).
+- Góc nhìn: Tập trung vào cảm nhận của nhân vật chính, nhưng có thể mở rộng mô tả ngoại cảnh và phản ứng của NPC.
+
+[PHẦN B: NHÂN VẬT & TÍNH CÁCH (OOC)]
+- KHÔNG OOC (Out Of Character). Nhân vật lạnh lùng không được đột nhiên nói nhiều.
+- Phát triển tâm lý phải có logic và sự chuyển biến từ từ.
+
+[PHẦN C: VĂN HÓA & QUỐC TỊCH]
+- Tuân thủ tuyệt đối phong tục, xưng hô của quốc gia đã thiết lập (Hàn Quốc: Oppa/Unnie, Nhật Bản: -san/-kun, Trung Quốc: Huynh/Muội/Đại nhân...).
+
+[PHẦN D: TÌNH YÊU & TƯƠNG TÁC]
+- Khơi gợi cảm xúc bằng hành động và ánh mắt (Show, Don't Tell).
+- Tương tác vật lý phải có chiều sâu, từ nhẹ nhàng đến cao trào nếu có định hướng.
+
+[PHẦN E: VẤN ĐỀ "BIẾT TRƯỚC VÔ LÝ"]
+- Nhân vật KHÔNG được biết những gì họ chưa trải qua hoặc chưa được kể.
+- AI không được nhảy cóc diễn biến nếu không có yêu cầu.
+
+[PHẦN F: SỰ HIỆN DIỆN CỦA USER]
+- User là trung tâm của câu chuyện. Mọi sự kiện phải xoay quanh hoặc có tác động đến User.
+
+[PHẦN G: PHONG CÁCH HÀNH VĂN]
+Triển khai theo 15 phong cách đa dạng (Trữ tình, Điện ảnh, Hậu hiện đại, Gợi cảm, Hiện thực khốc liệt, v.v.).
+
+[PHẦN H: KỸ THUẬT TRIỂN KHAI SIÊU DÀI]
+1. Viết cực kỳ chi tiết (Slow-burn). Một cái chạm tay có thể kéo dài 200 tokens.
+2. Khai thác độc thoại nội tâm sâu sắc.
+3. Mô tả bối cảnh 5 giác quan (thấy, nghe, ngửi, chạm, vị).
+4. Hội thoại có nhịp điệu, không đơn điệu.
+
+[PHẦN I: 10 LỖI VIẾT TUYỆT ĐỐI NÉ TRÁNH]
+- KHÔNG lặp từ, lặp ý.
+- KHÔNG dùng từ ngữ hiện đại trong bối cảnh cổ đại.
+- KHÔNG tóm tắt diễn biến.
+- KHÔNG kết thúc quá sớm.
+
+[PHẦN J: NHẬT KÝ THỜI GIAN & KHÔNG GIAN]
+- Đảm bảo tính liên kết thời gian giữa các chương.
+
+[PHẦN K: NPC & NHÂN VẬT PHỤ]
+- NPC phải có cá tính riêng, không làm nền mờ nhạt.
+
+[PHẦN L: ĐỊNH HƯỚNG & MẠCH CHUYỆN]
+- Sử dụng Định hướng người dùng làm kim chỉ nam tối thượng.
+
+[PHẦN M: BẢNG TỰ KIỂM TRA (TRƯỚC KHI FLUSH)]
+- Tự đếm mỗi 1,500 tokens: "Tôi đã viết bao nhiêu? Còn (16,000 - X) tokens nữa. Tôi đang ở segment Y/7. KHÔNG được kết thúc."
+- Có lặp lại không? -> Nếu có thì XÓA/SỬA.
+- Marker đã đúng chưa?
+
+[YÊU CẦU OUTPUT - CỰC KỲ QUAN TRỌNG]
+1. ĐỊNH NGHĨA "CHƯƠNG": Một chương = 7 phân đoạn × 2,500 tokens = 17,500 tokens. KHÔNG PHẢI truyện ngắn 8K-10K. KHÔNG được kết thúc trước token 16,000.
+2. MILESTONE BẮT BUỘC:
+   - Token 5,000: Đã xong segment 1-2, MỞ segment 3 ngay.
+   - Token 10,000: Mới 50% mục tiêu, MỞ tình huống mới ngay.
+   - Token 14,000: Còn segment 6-7, viết tiếp ngay.
+   - Token 17,000: BÂY GIỜ mới được đặt marker.
+3. KHI CẢM THẤY HẾT Ý -> MỞ TÌNH HUỐNG MỚI (Dùng 1 trong 6 kỹ thuật):
+   - NPC bất ngờ xuất hiện.
+   - Flashback ký ức (1,000-1,500 tokens).
+   - Biến cố nhỏ (mưa, mất điện...).
+   - Đổi không gian.
+   - Đổi thời gian.
+   - Inner monologue dày (800-1,200 tokens).
+
+[KIKOKO API CONTRACT - CẤM TUYỆT ĐỐI KẾT SỚM]
+❌ "Và họ sống hạnh phúc", "Câu chuyện kết thúc", "Đêm hôm ấy mọi thứ đã ổn"
+❌ "Cuối cùng họ hiểu nhau", "Chìm vào giấc ngủ bình yên"
+❌ "[Hết]", "[Còn tiếp]", "To be continued"
+❌ Marker <<<KIKOKO_CHAPTER_COMPLETE_V3>>> (chỉ đặt khi >= 16,000 tokens)
+TIẾP TỤC viết cho đến khi đạt mục tiêu 16,000 - 19,000 tokens.`;
+
+      let userPrompt = '';
+      if (mode === 'continue_same_chapter') {
+        const prevSlice = content.slice(-6000);
+        userPrompt = `[MODE: CONTINUE - VIẾT TIẾP CHƯƠNG ĐANG DANG DỞ]
+
+Đoạn đã viết gần nhất:
+"""
+${prevSlice}
+"""
+
+YÊU CẦU ĐỊNH HƯỚNG: ${direction || 'Triển khai tiếp mạch truyện'}
+
+YÊU CẦU:
+- Bắt đầu NGAY từ câu kế tiếp, KHÔNG tóm tắt, KHÔNG viết lại.
+- Xác định đã viết đến phân đoạn nào trong 7 phân đoạn chiến lược (Mở cảnh -> Triển khai -> Biến cố phụ -> Hồi tưởng -> Xung đột nhỏ -> Hòa giải/Tình cảm -> Cài cắm mở kết), viết tiếp các phân đoạn còn lại.
+- Tối thiểu viết thêm nội dung dài dặn, chi tiết, không lặp lại đoạn trên.
+- Tổng cộng phải đạt 16,000+ tokens toàn chương.`;
+      } else {
+        userPrompt = `[THIẾT LẬP NHÂN VẬT - ĐỌC KỸ ĐỂ KHÔNG OOC]
+${memoryContextBuilder}
+
+[2 CHƯƠNG GẦN NHẤT - PHẢI NỐI TIẾP MẠCH CHUYỆN]
+${truncatedChN2}
+${truncatedChN1}
+
+[MEMORY NGẮN HẠN]
+${shortTerm}
+${longTerm ? `\n[MEMORY DÀI HẠN]\n${longTerm}` : ''}
+
+[ĐỊNH HƯỚNG NGƯỜI DÙNG CHO CHƯƠNG NÀY]
+${direction || userPlot || 'Tiếp tục mạch truyện tự nhiên, kịch tính, lôi cuốn.'}
+
+[HƯỚNG DẪN TRIỂN KHAI]
+1. Chương mới BẮT BUỘC nối tiếp trực tiếp từ câu cuối của chương trước.
+2. Triển khai theo chiến lược 7 phân đoạn để đạt 19,000 tokens:
+   - Phân đoạn 1: Mở cảnh (Nối tiếp cảm xúc).
+   - Phân đoạn 2: Phát triển mâu thuẫn/Sự kiện mới.
+   - Phân đoạn 3: Tương tác chi tiết giữa các nhân vật.
+   - Phân đoạn 4: Cao trào hoặc Biến cố.
+   - Phân đoạn 5: Độc thoại nội tâm & Mô tả tâm lý.
+   - Phân đoạn 6: Giải quyết/Lắng đọng.
+   - Phân đoạn 7: Cài cắm cho chương sau.
+
+Hãy bắt đầu dệt nên chương truyện tuyệt vời này ngay bây giờ!`;
+      }
+
+      let apiUrl = proxyEndpoint.trim();
+      if (!apiUrl.startsWith('http')) apiUrl = 'https://' + apiUrl;
+      if (apiUrl.endsWith('/')) apiUrl = apiUrl.slice(0, -1);
+      
+      const completionUrl = apiUrl.endsWith('/chat/completions') 
+        ? apiUrl 
+        : apiUrl.endsWith('/v1') 
+          ? `${apiUrl}/chat/completions`
+          : `${apiUrl}/v1/chat/completions`;
+
+      const requestPayload: any = {
+        model: model,
+        messages: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.95,
+        top_p: 0.97,
+        top_k: 64,
+        frequency_penalty: 0.3,
+        presence_penalty: 0.2,
+        stream: useStreaming,
+        max_tokens: 32768
+      };
+
+      if (model.toLowerCase().includes('gemini')) {
+        requestPayload.generationConfig = {
+          thinkingConfig: { thinkingBudget: 0 }
+        };
+        requestPayload.safetySettings = [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+        ];
+      }
+      
+      console.log("Kikoko: Sending Request with max_tokens=32768");
+      if (requestPayload.generationConfig) {
+        console.log("Kikoko: thinkingBudget = 0 verified in request configs");
+      }
+
+      const fetchController = new AbortController();
+      const firstChunkTimeout = setTimeout(() => {
+        fetchController.abort('First chunk timeout 30s');
+        globalControllerManager.abort(currentNovel.id, 'First chunk timeout 30s');
+      }, 30000);
+      
+      novelAbortController.signal.addEventListener('abort', () => {
+         fetchController.abort(novelAbortController.signal.reason);
+      });
+
+      const response = await fetch(completionUrl, {
+        method: 'POST',
+        signal: fetchController.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${proxyKey}`,
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache',
+          ...(useStreaming ? { 'Accept': 'text/event-stream' } : {})
+        },
+        body: JSON.stringify(requestPayload)
+      });
+      
+      clearTimeout(firstChunkTimeout);
+
+      if (response.status === 504) {
+        throw new Error('Lỗi 504: Cổng kết nối hết hạn. Vui lòng thử lại với Model khác.');
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Lỗi từ server: ${response.status}`);
+      }
+
+      if (useStreaming) {
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        
+        if (!reader) throw new Error('Không đọc được stream từ Proxy.');
+
+        let lastChunkTime = Date.now();
+        let interChunkTimeoutInterval = setInterval(() => {
+           if (Date.now() - lastChunkTime > 60000) {
+              fetchController.abort('Inter-chunk timeout 60s');
+              globalControllerManager.abort(currentNovel.id, 'Inter-chunk timeout 60s');
+           }
+        }, 5000);
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              isApiDoneRef.current = true;
+              break;
+            }
+            
+            lastChunkTime = Date.now();
+            
+            if (!timerStarted) startTimers();
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (trimmedLine.startsWith('data: ') && trimmedLine !== 'data: [DONE]') {
+                try {
+                  const data = JSON.parse(trimmedLine.slice(6));
+                  const delta = data.choices?.[0]?.delta?.content || data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                  if (delta && typeof delta === 'string') {
+                    if (delta.includes('<<<KIKOKO_CHAPTER_COMPLETE_V3>>>')) {
+                       fullTextRef.current += delta.replace('<<<KIKOKO_CHAPTER_COMPLETE_V3>>>', '');
+                       isApiDoneRef.current = true;
+                    } else {
+                       fullTextRef.current += delta;
+                    }
+                  }
+                } catch (e) {
+                  // Buffer skip json error 
+                }
+              }
+            }
+          }
+        } finally {
+          clearInterval(interChunkTimeoutInterval);
+        }
+        
+        const TRIM_PREMATURE_TAIL = /\n*(?:và họ (?:sống|chìm|ngủ).*?(?:hạnh phúc|bình yên|thiếp đi)[\s\S]*$|câu chuyện (?:kết thúc|đã (?:hết|kết))[\s\S]*$|cuối cùng.*?(?:hiểu nhau|hòa giải)[\s\S]*$|đêm (?:hôm ấy|đó).*?(?:ổn|yên|qua đi)[\s\S]*$|\[(?:hết|còn tiếp|kết thúc)\][\s\S]*$|to be continued[\s\S]*$)/gi;
+        fullTextRef.current = fullTextRef.current.replace(TRIM_PREMATURE_TAIL, '');
+        isApiDoneRef.current = true;
+        
+        // Preserve partial context logic
+        if (!fullTextRef.current.trim()) {
+           throw new Error('API trả về rỗng.');
+        }
+
+      } else {
+        const data = await response.json();
+        if (!timerStarted) startTimers();
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+          throw new Error('Dữ liệu API không hợp lệ.');
+        }
+        let generatedContent = data.choices[0].message.content;
+        generatedContent = generatedContent.replace('<<<KIKOKO_CHAPTER_COMPLETE_V3>>>', '');
+        
+        // Wait, for continue_same_chapter we just append in Non-streaming mode too!
+        // fullTextRef string would have been appended previously in displayedTextRef.
+        // Actually, we replaced fullTextRef.current with content at the start.
+        fullTextRef.current += generatedContent;
+        const TRIM_PREMATURE_TAIL = /\n*(?:và họ (?:sống|chìm|ngủ).*?(?:hạnh phúc|bình yên|thiếp đi)[\s\S]*$|câu chuyện (?:kết thúc|đã (?:hết|kết))[\s\S]*$|cuối cùng.*?(?:hiểu nhau|hòa giải)[\s\S]*$|đêm (?:hôm ấy|đó).*?(?:ổn|yên|qua đi)[\s\S]*$|\[(?:hết|còn tiếp|kết thúc)\][\s\S]*$|to be continued[\s\S]*$)/gi;
+        fullTextRef.current = fullTextRef.current.replace(TRIM_PREMATURE_TAIL, '');
+        isApiDoneRef.current = true;
+      }
+
+    } catch (err: any) {
+      if (err.name === 'AbortError' || err === 'TIMEOUT' || err.message?.includes('timeout') || err.message?.includes('aborted') || novelAbortController.signal.aborted) {
+        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+        if (displayIntervalRef.current) clearInterval(displayIntervalRef.current);
+        setIsGenerating(false);
+        setContent(fullTextRef.current);
+        setStreamingContent('');
+        if (fullTextRef.current.length > 4000) {
+           setSuccessMessage('Kết nối đứt nhưng đã lưu lại phần đang viết dở.');
+        } else {
+           setError('Yêu cầu đã bị hủy hoặc bị time-out.');
+        }
+      } else {
+        console.error(err);
+        let errorMsg = err.message || 'Lỗi khi tạo nội dung. Vui lòng thử lại.';
+        if (errorMsg === 'Failed to fetch') {
+          errorMsg = 'Không thể kết nối với Proxy Endpoint. Lỗi mạng hoặc CORS.';
+        }
+        setError(errorMsg);
+        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+        if (displayIntervalRef.current) clearInterval(displayIntervalRef.current);
+        setIsGenerating(false);
+        setContent(fullTextRef.current);
+        setStreamingContent('');
+      }
+    }
+  };
+
+  const cancelGeneration = () => {
+    if (currentNovel) {
+      globalControllerManager.abort(currentNovel.id, 'Manual stop');
+    }
+  };
+
+  const handleSave = () => {
+    if (!currentNovel || !(content || '').trim()) return;
+    
+    let updatedNovel: Novel;
+    let savedChapter: Chapter | undefined;
+    if (editingChapterId) {
+      const updatedChapters = currentNovel.chapters.map(ch => 
+        ch.id === editingChapterId ? { ...ch, content: content || '' } : ch
+      );
+      savedChapter = updatedChapters.find(ch => ch.id === editingChapterId);
+      updatedNovel = { 
+        ...currentNovel,
+        chapters: updatedChapters,
+        userPlot,
+        nextChapterLength,
+        lastModified: Date.now()
+      };
+    } else {
+      const newChapterId = Date.now().toString();
+      const newChapter: Chapter = {
+        id: newChapterId,
+        title: (currentNovel.chapters.length + 1).toString(),
+        content: content || '',
+        timestamp: new Date().toLocaleString()
+      };
+      savedChapter = newChapter;
+      updatedNovel = { 
+        ...currentNovel,
+        chapters: [...currentNovel.chapters, newChapter],
+        userPlot,
+        nextChapterLength,
+        lastModified: Date.now()
+      };
+      setEditingChapterId(newChapterId); // Giữ chương vừa lưu ở trạng thái đang sửa
+    }
+    
+    saveNovelToFirebase(updatedNovel);
+    if (savedChapter) {
+      saveChapterToFirebase(updatedNovel.id, savedChapter);
+    }
+    setSuccessMessage('Đã lưu chương thành công!');
+    // Không setContent('') để người dùng vẫn thấy nội dung vừa lưu
+  };
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const handleGenerateGossip = async () => {
+    if (!currentNovel || !content.trim()) return;
+    const { proxyEndpoint, proxyKey, model } = currentNovel.settings || {};
+    if (!proxyEndpoint || !proxyKey || !model) return;
+
+    setIsGeneratingGossip(true);
+    setNpcProgress(0);
+    setNpcComments([]);
+    gossipAbortControllerRef.current = new AbortController();
+
+    const totalNpcs = 5000;
+    const batchSize = 50;
+    let accumulatedComments: NPCComment[] = [];
+
+    try {
+      for (let i = 0; i < totalNpcs; i += batchSize) {
+        if (gossipAbortControllerRef.current?.signal.aborted) break;
+
+        const systemInstruction = `Bạn là một nhóm NPC (độc giả ảo) đang theo dõi câu chuyện "${currentNovel.storyName}".
+Nhiệm vụ: Hãy tạo ra một cuộc hội thoại sôi nổi, cãi nhau, khen ngợi, bình luận về nội dung chương truyện vừa đọc.
+YÊU CẦU:
+1. Tạo ra ${batchSize} bình luận từ các NPC khác nhau.
+2. Mỗi bình luận phải có: Tên NPC, Vai trò, và Nội dung bình luận.
+3. Nội dung phải đa dạng: cãi nhau về tình tiết, khen nhân vật ${currentNovel.characterName}, chê tác giả viết chậm, dự đoán tương lai...
+4. Trả về định dạng JSON: { "comments": [ { "npcName": "...", "npcRole": "...", "content": "..." }, ... ] }`;
+
+        const userPrompt = `Nội dung chương truyện vừa xong:
+${content.substring(0, 3000)}
+
+Hãy cho các NPC "lắm chuyện" bắt đầu bàn tán! (Đợt ${i / batchSize + 1}/${totalNpcs / batchSize})`;
+
+        let apiUrl = proxyEndpoint.trim();
+        if (!apiUrl.startsWith('http')) apiUrl = 'https://' + apiUrl;
+        if (apiUrl.endsWith('/')) apiUrl = apiUrl.slice(0, -1);
+        
+        const completionUrl = apiUrl.endsWith('/chat/completions') 
+          ? apiUrl 
+          : apiUrl.endsWith('/v1') 
+            ? `${apiUrl}/chat/completions`
+            : `${apiUrl}/v1/chat/completions`;
+
+        const response = await fetch(completionUrl, {
+          method: 'POST',
+          signal: gossipAbortControllerRef.current.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${proxyKey}`
+          },
+          body: JSON.stringify({
+            model: model,
+            messages: [
+              { role: 'system', content: systemInstruction },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.9
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Gossip API failed with status ${response.status}: ${errorText}`);
+          throw new Error(`Gossip API failed with status ${response.status}: ${errorText}`);
+        }
+        const data = await response.json();
+        
+        let rawContent = '';
+        if (data.choices?.[0]?.message?.content) {
+          rawContent = data.choices[0].message.content;
+        } else if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
+          rawContent = data.candidates[0].content.parts[0].text;
+        }
+        
+        rawContent = rawContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        let result;
+        try {
+          result = JSON.parse(rawContent);
+        } catch (e) {
+          const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) result = JSON.parse(jsonMatch[0]);
+          else throw new Error('Phản hồi từ NPC không đúng định dạng.');
+        }
+        
+        const newComments: NPCComment[] = (result.comments || []).map((c: any) => ({
+          id: Math.random().toString(36).substr(2, 9),
+          npcName: c.npcName,
+          npcAvatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${c.npcName}`,
+          npcRole: c.npcRole,
+          npcBackground: currentNovel.npcGlobalBackground || '',
+          content: c.content,
+          timestamp: new Date().toLocaleTimeString()
+        }));
+
+        accumulatedComments = [...accumulatedComments, ...newComments];
+        setNpcComments(accumulatedComments);
+        setNpcProgress(i + batchSize);
+        
+        // Add a small delay to avoid rate limits
+        await sleep(1000);
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        setError('Đã hủy kết nối hội nhóm NPC.');
+      } else {
+        console.error(err);
+        setError(err.message || 'Không thể kết nối với hội nhóm lắm chuyện.');
+      }
+    } finally {
+      setIsGeneratingGossip(false);
+      gossipAbortControllerRef.current = null;
+    }
+  };
+
+  const cancelGossipGeneration = () => {
+    if (gossipAbortControllerRef.current) {
+      gossipAbortControllerRef.current.abort();
+    }
+  };
+
+  // Main Render
+  if (isAuthLoading) {
+    return (
+      <div className="h-screen w-full bg-[#FAF7F2] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-[#DB2777]/20 border-t-[#DB2777] rounded-full animate-spin" />
+          <p className="text-stone-400 font-medium animate-pulse">Đang kiểm tra thông tin...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full w-full overflow-hidden">
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRef} 
+        onChange={handleFileChange} 
+        className="hidden" 
+      />
+      <AnimatePresence mode="wait">
+        {!currentNovelId || !currentNovel ? (
+          <motion.div 
+            key="library"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="h-full w-full bg-[#FAF7F2] p-6 overflow-y-auto custom-scrollbar bg-cover bg-center transition-all duration-700"
+            style={{ backgroundImage: galleryBackground ? `url('${galleryBackground}')` : 'none' }}
+          >
+            <div className="max-w-5xl mx-auto">
+              <div className="flex items-center justify-between mb-10 bg-white/40 backdrop-blur-md p-6 rounded-3xl border border-white/20 shadow-sm">
+                <div className="flex items-center">
+                  <button onClick={onBack} className="p-2 mr-4 text-stone-700 hover:bg-stone-200 rounded-full transition-colors">
+                    <ArrowLeft size={24} />
+                  </button>
+                  <h1 className="text-3xl font-bold text-stone-800 flex items-center tracking-tight">
+                    <Library className="mr-3 text-[#DB2777]" size={32} /> Thư viện của tôi
+                  </h1>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => handleImageUrl('galleryBackground')}
+                    className="p-3 bg-white/40 text-stone-700 rounded-xl font-bold hover:bg-white/60 transition-all shadow-sm border border-white/40"
+                    title="Thay đổi ảnh nền thư viện"
+                  >
+                    <ImageIcon size={20} />
+                  </button>
+                  <button 
+                    onClick={createNewNovel}
+                    className="flex items-center gap-2 px-6 py-3 bg-[#DB2777] text-white rounded-xl font-bold hover:bg-[#BE185D] transition-all shadow-lg hover:shadow-[#DB2777]/20"
+                  >
+                    <Plus size={20} />
+                    <span>Cuốn sổ mới</span>
+                  </button>
+                </div>
+              </div>
+
+              {novels.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-stone-400">
+                  <BookOpen size={80} className="mb-6 opacity-10" />
+                  <p className="text-xl font-medium mb-2">Chưa có cuốn sổ nào</p>
+                  <p className="text-sm">Hãy tạo cuốn sổ đầu tiên để bắt đầu hành trình sáng tác.</p>
+                  {!user && (
+                    <button 
+                      onClick={handleLogin}
+                      className="mt-6 px-6 py-3 bg-[#DB2777] text-white rounded-xl font-bold hover:bg-[#BE185D] transition-all shadow-lg"
+                    >
+                      Đăng nhập để đồng bộ đám mây
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {!user && (
+                    <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-between">
+                      <div className="flex items-center gap-3 text-amber-800">
+                        <User size={20} />
+                        <span className="text-sm font-medium">Bạn đang ở chế độ khách. Đăng nhập để bảo vệ dữ liệu trên đám mây.</span>
+                      </div>
+                      <button 
+                        onClick={handleLogin}
+                        className="px-4 py-2 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-all"
+                      >
+                        Đăng nhập ngay
+                      </button>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-10">
+                  {(novels || []).map((novel, idx) => (
+                    <motion.div
+                      key={novel.id}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      whileHover={{ y: -12, rotate: idx % 2 === 0 ? 1 : -1 }}
+                      onClick={() => {
+                        setCurrentNovelId(novel.id);
+                        setActiveTab('setup');
+                      }}
+                      className="group relative h-[450px] rounded-[2.5rem] overflow-hidden shadow-2xl cursor-pointer bg-white border border-stone-100/50"
+                    >
+                      <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-110" style={{ backgroundImage: `url('${novel.coverImage || DEFAULT_COVER}')` }} />
+                      
+                      {/* Decorative Overlay */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
+                      
+                      {/* Artsy Elements */}
+                      <div className="absolute top-6 left-6 w-12 h-12 rounded-full bg-white/20 backdrop-blur-md border border-white/30 flex items-center justify-center text-white">
+                        <Book size={20} />
+                      </div>
+                      
+                      <div className="absolute inset-0 p-8 flex flex-col justify-end text-white">
+                        <div className="space-y-4">
+                          <div className="inline-block px-3 py-1 bg-[#DB2777] text-[10px] font-bold rounded-full uppercase tracking-widest shadow-lg">
+                            {novel.genre || 'Tiểu thuyết'}
+                          </div>
+                          <h3 className="text-2xl font-serif font-bold leading-tight line-clamp-2 italic">
+                            {novel.storyName}
+                          </h3>
+                          <div className="flex items-center gap-4 text-xs opacity-80 font-medium">
+                            <span className="flex items-center gap-1"><Users size={14} /> {novel.characterName}</span>
+                            <span className="flex items-center gap-1"><Menu size={14} /> {novel.chapters.length} chương</span>
+                          </div>
+                          
+                          <div className="pt-4 flex justify-between items-center border-t border-white/20">
+                            <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">
+                              Cập nhật: {new Date(novel.lastModified).toLocaleDateString()}
+                            </span>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteConfirmId(novel.id);
+                                }}
+                                className="p-2 bg-white/10 hover:bg-red-500/20 rounded-full transition-all text-white/60 hover:text-red-400"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </motion.div>
+        ) : (
+          <motion.div 
+            key="editor"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="h-full w-full text-stone-800 flex flex-col relative bg-cover bg-center transition-all duration-700"
+            style={{ backgroundImage: currentNovel.editorBackgroundImage ? `url('${currentNovel.editorBackgroundImage}')` : 'none' }}
+          >
+            <div className={`absolute inset-0 transition-all duration-500 ${isFocusMode ? 'bg-white/95' : 'bg-[#FAF7F2]/80 backdrop-blur-md'}`} />
+            
+            <div className="relative z-10 w-full flex flex-col h-full">
+              {/* Header */}
+              <AnimatePresence>
+                {!isFocusMode && (
+                  <motion.div 
+                    initial={{ y: -100 }}
+                    animate={{ y: 0 }}
+                    exit={{ y: -100 }}
+                    className="flex items-center justify-between px-6 py-4 border-b border-stone-200/50 bg-white/40 backdrop-blur-sm"
+                  >
+                    <div className="flex items-center gap-6">
+                      <button onClick={() => setCurrentNovelId(null)} className="p-2 text-stone-700 hover:bg-white/40 rounded-full transition-colors">
+                        <Library size={24} />
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="text-[#DB2777]" size={24} />
+                        <h1 className="text-xl font-bold text-stone-800 tracking-tight">
+                          {currentNovel.storyName || 'Novel App'}
+                        </h1>
+                      </div>
+                      
+                      {/* Tabs */}
+                      <div className="flex bg-stone-200/50 p-1 rounded-xl ml-4">
+                        <button 
+                          onClick={() => setActiveTab('setup')}
+                          className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'setup' ? 'bg-white text-[#DB2777] shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}
+                        >
+                          Thiết lập
+                        </button>
+                        <button 
+                          onClick={() => setActiveTab('editor')}
+                          className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'editor' ? 'bg-white text-[#DB2777] shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}
+                        >
+                          Sáng tác
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-2">
+                      <button onClick={() => handleImageUrl('cover')} title="Đổi ảnh bìa" className="p-2 text-stone-700 hover:bg-white/40 rounded-full transition-colors"><ImageIcon size={20} className="text-[#DB2777]" /></button>
+                      <button onClick={() => handleImageUrl('editorBg')} title="Đổi ảnh nền viết truyện" className="p-2 text-stone-700 hover:bg-white/40 rounded-full transition-colors"><ImageIcon size={20} /></button>
+                      <button onClick={() => setShowDrawer(!showDrawer)} title="Danh sách chương" className="p-2 text-stone-700 hover:bg-white/40 rounded-full transition-colors"><Menu size={20} /></button>
+                      <button onClick={() => setShowSettings(!showSettings)} title="Cài đặt API" className="p-2 text-stone-700 hover:bg-white/40 rounded-full transition-colors"><Settings size={20} /></button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+        {/* Content Area */}
+        <div className="flex-1 overflow-hidden relative">
+          <AnimatePresence mode="wait">
+            {activeTab === 'setup' ? (
+              <motion.div 
+                key="setup"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="h-full w-full overflow-y-auto p-8 custom-scrollbar"
+              >
+                <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 pb-20">
+                  {/* API Settings */}
+                  <div className="bg-white/90 backdrop-blur-lg p-8 rounded-3xl border border-[#FBCFE8] shadow-xl">
+                    <h2 className="font-bold text-[#BE185D] text-lg flex items-center mb-6">
+                      <Settings className="mr-2" size={20} /> Cấu hình hệ thống
+                    </h2>
+                    <div className="space-y-6">
+                      <div>
+                        <label className="block text-xs font-semibold text-stone-500 uppercase mb-1 ml-1">Loại API (API Type)</label>
+                        <select 
+                          value={currentNovel?.settings?.apiType || 'auto'}
+                          onChange={(e) => updateSettings({ apiType: e.target.value as any })}
+                          className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none transition-all"
+                        >
+                          <option value="auto">Tự động phát hiện (Auto Detect)</option>
+                          <option value="openai">OpenAI-compatible</option>
+                          <option value="claude">Claude (Anthropic)</option>
+                          <option value="gemini">Gemini</option>
+                          <option value="custom">Custom Endpoint</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-stone-500 uppercase mb-1 ml-1">API Endpoint</label>
+                        <input type="text" placeholder="https://api.example.com/v1" value={currentNovel?.settings?.proxyEndpoint || ''} onChange={(e) => updateSettings({ proxyEndpoint: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none transition-all" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-stone-500 uppercase mb-1 ml-1">API Key</label>
+                        <input type="password" placeholder="Nhập API Key (sk-..., yL9Fw..., v.v.)" value={currentNovel?.settings?.proxyKey || ''} onChange={(e) => updateSettings({ proxyKey: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none transition-all" />
+                      </div>
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <label className="block text-xs font-semibold text-stone-500 uppercase ml-1">Chọn Model</label>
+                          <button 
+                            onClick={fetchModels} 
+                            disabled={isFetchingModels}
+                            className={`text-[10px] font-bold flex items-center gap-1 transition-all ${isFetchingModels ? 'text-stone-400' : 'text-[#DB2777] hover:underline'}`}
+                          >
+                            {isFetchingModels ? (
+                              <>
+                                <div className="w-2 h-2 border border-stone-400 border-t-transparent rounded-full animate-spin" />
+                                Đang tải...
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles size={10} /> Làm mới danh sách
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        
+                        <div className="relative group">
+                          <div className="flex overflow-x-auto gap-3 pb-4 custom-scrollbar snap-x">
+                            {availableModels.length === 0 ? (
+                              <div className="w-full p-8 border-2 border-dashed border-stone-100 rounded-2xl flex flex-col items-center justify-center text-stone-400 gap-2">
+                                <Bot size={24} />
+                                <span className="text-[10px] font-bold">Chưa có model nào. Hãy nhấn "Làm mới"</span>
+                              </div>
+                            ) : (
+                              availableModels.map(m => (
+                                <button 
+                                  key={m}
+                                  onClick={() => updateSettings({ model: m })}
+                                  className={`flex-shrink-0 snap-start px-6 py-4 rounded-2xl border-2 transition-all flex flex-col items-center gap-2 min-w-[140px] ${currentNovel.settings.model === m ? 'border-[#DB2777] bg-pink-50 shadow-md shadow-pink-100' : 'border-stone-100 bg-white hover:border-pink-200'}`}
+                                >
+                                  <div className={`p-2 rounded-xl ${currentNovel.settings.model === m ? 'bg-[#DB2777] text-white' : 'bg-stone-100 text-stone-400'}`}>
+                                    <Bot size={20} />
+                                  </div>
+                                  <span className={`text-[10px] font-bold truncate w-full text-center ${currentNovel.settings.model === m ? 'text-[#DB2777]' : 'text-stone-600'}`}>{m}</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                          {/* Gradient Fades for Scroll */}
+                          <div className="absolute top-0 left-0 bottom-4 w-8 bg-gradient-to-r from-white to-transparent pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <div className="absolute top-0 right-0 bottom-4 w-8 bg-gradient-to-l from-white to-transparent pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+
+                        {/* Manual Model Input */}
+                        <div>
+                          <input 
+                            type="text" 
+                            placeholder="Hoặc nhập tên Model thủ công..." 
+                            value={currentNovel.settings.model} 
+                            onChange={(e) => updateSettings({ model: e.target.value })} 
+                            className="w-full p-3 bg-stone-50 rounded-xl border border-stone-100 focus:ring-2 focus:ring-[#DB2777] outline-none text-xs transition-all" 
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 p-4 bg-pink-50 rounded-xl border border-pink-100">
+                        <input 
+                          type="checkbox" 
+                          id="useStreaming" 
+                          checked={currentNovel.settings.useStreaming !== false} 
+                          onChange={(e) => updateSettings({ useStreaming: e.target.checked })}
+                          className="w-5 h-5 text-[#DB2777] rounded focus:ring-[#BE185D]"
+                        />
+                        <label htmlFor="useStreaming" className="text-sm font-medium text-stone-700 cursor-pointer">
+                          Bật chế độ Streaming (Viết theo thời gian thực)
+                          <p className="text-xs text-stone-500 font-normal mt-1">Khuyên dùng để tránh lỗi Proxy làm mất chữ khi viết chương dài (&gt; 5000 tokens).</p>
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-3 p-4 bg-purple-50 rounded-xl border border-purple-100">
+                        <input 
+                          type="checkbox" 
+                          id="extremeCapacityMode" 
+                          checked={currentNovel.settings.extremeCapacityMode || false} 
+                          onChange={(e) => updateSettings({ extremeCapacityMode: e.target.checked })}
+                          className="w-5 h-5 text-purple-600 rounded focus:ring-purple-500"
+                        />
+                        <label htmlFor="extremeCapacityMode" className="text-sm font-medium text-stone-700 cursor-pointer">
+                          Bật chế độ Siêu Sức Chứa (Extreme Capacity - 100.000+ Tokens)
+                          <p className="text-xs text-stone-500 font-normal mt-1">Cho phép nhận văn bản cực lớn trong 1 lần trả lời. Thời gian chờ tối đa lên đến 60 phút.</p>
+                        </label>
+                      </div>
+
+                      <div className="space-y-4 p-4 bg-stone-50 rounded-xl border border-stone-200">
+                        <label className="block text-xs font-bold text-stone-500 uppercase">Cài đặt Token & Timeout</label>
+                        <div className="flex flex-wrap gap-2">
+                          {[30000, 50000, 100000, 500000].map(tokens => (
+                            <button 
+                              key={tokens}
+                              onClick={() => updateSettings({ maxTokens: tokens })}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${currentNovel.settings.maxTokens === tokens ? 'bg-[#DB2777] text-white' : 'bg-white text-stone-600 border border-stone-200'}`}
+                            >
+                              {tokens >= 1000000 ? `${tokens/1000000}M` : tokens >= 1000 ? `${tokens/1000}K` : tokens} Tokens
+                            </button>
+                          ))}
+                          <button 
+                            onClick={() => updateSettings({ maxTokens: 1000000 })}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${currentNovel.settings.maxTokens === 1000000 ? 'bg-[#DB2777] text-white' : 'bg-white text-stone-600 border border-stone-200'}`}
+                          >
+                            1M (Siêu Khổng Lồ)
+                          </button>
+                          <button 
+                            onClick={() => updateSettings({ maxTokens: 2000000 })}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${currentNovel.settings.maxTokens === 2000000 ? 'bg-[#DB2777] text-white' : 'bg-white text-stone-600 border border-stone-200'}`}
+                          >
+                            Vô hạn
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <label className="text-xs font-bold text-stone-500 uppercase">Tùy chỉnh Token:</label>
+                          <input 
+                            type="number" 
+                            value={currentNovel.settings.maxTokens || 32000} 
+                            onChange={(e) => updateSettings({ maxTokens: Number(e.target.value) })}
+                            className="w-32 p-2 bg-white rounded-lg border border-stone-200 text-sm outline-none"
+                          />
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <label className="text-xs font-bold text-stone-500 uppercase">Timeout (phút):</label>
+                          <input 
+                            type="number" 
+                            value={currentNovel.settings.timeout || 15} 
+                            onChange={(e) => updateSettings({ timeout: Number(e.target.value) })}
+                            className="w-20 p-2 bg-white rounded-lg border border-stone-200 text-sm outline-none"
+                          />
+                        </div>
+                      </div>
+                      <button onClick={() => {
+                        if (currentNovel?.settings?.proxyEndpoint && currentNovel?.settings?.proxyKey && currentNovel?.settings?.model) {
+                          updateSettings({ isSetupComplete: true });
+                          setSuccessMessage('Đã lưu cấu hình!');
+                        } else {
+                          setError('Vui lòng hoàn tất cài đặt.');
+                        }
+                      }} className="w-full p-3 bg-[#DB2777] text-white rounded-xl font-bold hover:bg-[#BE185D] transition-all shadow-lg">Lưu thiết lập</button>
+                    </div>
+                  </div>
+
+                  {/* Visual Settings */}
+                  <div className="bg-white/90 backdrop-blur-lg p-8 rounded-3xl border border-[#FBCFE8] shadow-xl">
+                    <h2 className="font-bold text-[#BE185D] text-lg flex items-center mb-6">
+                      <ImageIcon className="mr-2" size={20} /> Giao diện & Hình ảnh
+                    </h2>
+                    <div className="grid grid-cols-2 gap-6">
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-stone-500 uppercase ml-1">Ảnh bìa cuốn sổ</label>
+                        <div 
+                          onClick={() => handleImageUrl('cover')}
+                          className="aspect-[3/4] rounded-2xl border-2 border-dashed border-stone-200 hover:border-[#DB2777] transition-all cursor-pointer flex flex-col items-center justify-center bg-stone-50 overflow-hidden relative group"
+                        >
+                          {currentNovel.coverImage ? (
+                            <>
+                              <img src={currentNovel.coverImage} alt="Cover" className="w-full h-full object-cover" />
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold text-center p-2">Thay đổi</div>
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={24} className="text-stone-300 mb-2" />
+                              <span className="text-[10px] font-bold text-stone-400">Chọn ảnh bìa</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-stone-500 uppercase ml-1">Ảnh nền trang viết</label>
+                        <div 
+                          onClick={() => handleImageUrl('editorBg')}
+                          className="aspect-[3/4] rounded-2xl border-2 border-dashed border-stone-200 hover:border-[#DB2777] transition-all cursor-pointer flex flex-col items-center justify-center bg-stone-50 overflow-hidden relative group"
+                        >
+                          {currentNovel.editorBackgroundImage ? (
+                            <>
+                              <img src={currentNovel.editorBackgroundImage} alt="Editor BG" className="w-full h-full object-cover" />
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold text-center p-2">Thay đổi</div>
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={24} className="text-stone-300 mb-2" />
+                              <span className="text-[10px] font-bold text-stone-400">Chọn ảnh nền</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-stone-500 uppercase">Hình nền NPC</label>
+                        <div onClick={() => handleImageUrl('npcBg')} className="aspect-[3/4] rounded-2xl border-2 border-dashed border-stone-200 flex items-center justify-center bg-stone-50 overflow-hidden cursor-pointer hover:border-[#DB2777] transition-all">
+                          {currentNovel.npcGlobalBackground ? <img src={currentNovel.npcGlobalBackground} className="w-full h-full object-cover" /> : <Plus size={24} className="text-stone-300" />}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Story Info */}
+                  <div className="bg-white/90 backdrop-blur-lg p-8 rounded-3xl border border-[#FBCFE8] shadow-xl md:col-span-2">
+                    <h2 className="font-bold text-[#BE185D] text-lg flex items-center mb-6">
+                      <User className="mr-2" size={20} /> Thông tin truyện & Nhân vật
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-6">
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Tên câu chuyện</label>
+                          <input type="text" placeholder="Tên câu chuyện" value={currentNovel.storyName} onChange={(e) => updateCurrentNovel({ storyName: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Tên nhân vật chính</label>
+                          <input type="text" placeholder="Tên nhân vật" value={currentNovel.characterName} onChange={(e) => updateCurrentNovel({ characterName: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Thể loại</label>
+                          <input type="text" placeholder="Thể loại" value={currentNovel.genre} onChange={(e) => updateCurrentNovel({ genre: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Độ dài chương mặc định (từ)</label>
+                          <div className="flex gap-2 mb-2">
+                            {[1000, 5000, 10000, 50000].map(len => (
+                              <button 
+                                key={len}
+                                onClick={() => updateCurrentNovel({ chapterLength: len })}
+                                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${currentNovel.chapterLength === len ? 'bg-[#DB2777] text-white' : 'bg-stone-100 text-stone-600'}`}
+                              >
+                                {len >= 1000 ? `${len/1000}K` : len} chữ
+                              </button>
+                            ))}
+                          </div>
+                          <input type="number" value={currentNovel.chapterLength} onChange={(e) => updateCurrentNovel({ chapterLength: Number(e.target.value) })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none" />
+                        </div>
+                        <div>
+                          <div className="flex justify-between items-center mb-1 ml-1">
+                            <label className="block text-xs font-bold text-stone-500 uppercase">Số lượng NPC bàn tán</label>
+                            <span className="text-xs font-bold text-[#DB2777]">{currentNovel.npcCount || 500}</span>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <input 
+                              type="range"
+                              min="100"
+                              max="10000"
+                              step="100"
+                              value={currentNovel.npcCount || 500}
+                              onChange={(e) => updateCurrentNovel({ npcCount: Number(e.target.value) })}
+                              className="flex-1 h-2 bg-stone-100 rounded-lg appearance-none cursor-pointer accent-[#DB2777]"
+                            />
+                            <div className="flex gap-2">
+                              {[500, 5000].map(count => (
+                                <button 
+                                  key={count}
+                                  onClick={() => updateCurrentNovel({ npcCount: count })}
+                                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${currentNovel.npcCount === count ? 'bg-[#DB2777] text-white' : 'bg-stone-100 text-stone-600'}`}
+                                >
+                                  {count}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-6">
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Thông tin Bot Character</label>
+                          <textarea placeholder="Mô tả tính cách, ngoại hình, hành động của Bot..." value={currentNovel.botCharInfo} onChange={(e) => updateCurrentNovel({ botCharInfo: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none h-24 resize-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Thông tin User Character</label>
+                          <textarea placeholder="Mô tả vai trò, mối quan hệ của bạn trong truyện..." value={currentNovel.userCharInfo} onChange={(e) => updateCurrentNovel({ userCharInfo: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none h-24 resize-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Phong cách viết / Prompt bổ sung</label>
+                          <textarea placeholder="Ví dụ: Viết theo phong cách u tối, lãng mạn, sử dụng nhiều ẩn dụ..." value={currentNovel.writingPrompt} onChange={(e) => updateCurrentNovel({ writingPrompt: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none h-24 resize-none mb-4" />
+                          
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-2 ml-1">Chọn Văn Phong Mẫu (Có thể chọn nhiều)</label>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-60 overflow-y-auto custom-scrollbar p-2 bg-stone-50 rounded-xl border border-stone-200">
+                            {WRITING_STYLES.map(style => {
+                              const isSelected = currentNovel.selectedStyles?.includes(style.id) || false;
+                              return (
+                                <div 
+                                  key={style.id}
+                                  onClick={() => {
+                                    const currentStyles = currentNovel.selectedStyles || [];
+                                    if (isSelected) {
+                                      updateCurrentNovel({ selectedStyles: currentStyles.filter(id => id !== style.id) });
+                                    } else {
+                                      updateCurrentNovel({ selectedStyles: [...currentStyles, style.id] });
+                                    }
+                                  }}
+                                  className={`p-3 rounded-lg border cursor-pointer transition-all text-sm ${isSelected ? 'bg-[#FBCFE8] border-[#DB2777] text-[#9D174D]' : 'bg-white border-stone-200 text-stone-600 hover:border-[#FBCFE8]'}`}
+                                >
+                                  <div className="font-bold mb-1">{style.name}</div>
+                                  <div className="text-xs opacity-80 line-clamp-2">{style.content}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Bộ nhớ dài hạn (Cốt truyện & Bối cảnh)</label>
+                          <textarea placeholder="Tóm tắt cốt truyện quan trọng cần nhớ vĩnh viễn..." value={currentNovel.longTermMemory} onChange={(e) => updateCurrentNovel({ longTermMemory: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none h-24 resize-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-stone-500 uppercase mb-1 ml-1">Bộ nhớ nhân vật (Chính, Phụ, NPC)</label>
+                          <textarea placeholder="Danh sách và đặc điểm các nhân vật đã xuất hiện..." value={currentNovel.characterMemory} onChange={(e) => updateCurrentNovel({ characterMemory: e.target.value })} className="w-full p-3 bg-white rounded-xl border border-[#FBCFE8] focus:ring-2 focus:ring-[#DB2777] outline-none h-24 resize-none" />
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <button 
+                      onClick={handleGenerate} 
+                      disabled={isGenerating} 
+                      className={`w-full mt-8 p-4 rounded-2xl font-bold text-white shadow-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 ${isGenerating ? 'bg-stone-400 cursor-not-allowed' : 'bg-gradient-to-r from-[#DB2777] to-[#BE185D] hover:shadow-[#DB2777]/20'}`}
+                    >
+                      {isGenerating ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          <span>Đang sáng tác...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={20} />
+                          <span>Bắt đầu sáng tác</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div 
+                key="editor"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className={`h-full w-full overflow-y-auto custom-scrollbar transition-all duration-500 ${isFocusMode ? 'bg-white' : ''}`}
+              >
+                <div className={`w-full min-h-full flex flex-col items-center py-10 ${isFocusMode ? '' : 'px-4'}`}>
+                  {/* Standard Layout Container */}
+                  <div 
+                    className={`bg-white shadow-2xl rounded-[2rem] overflow-hidden flex flex-col transition-all duration-500 border border-stone-200/50 w-full max-w-5xl`}
+                    style={{ 
+                      minHeight: '80vh',
+                      backgroundColor: '#FAF9F6' 
+                    }}
+                  >
+                    {/* Editor Header */}
+                    <div className="flex flex-wrap justify-between items-center px-4 md:px-8 py-4 md:py-6 border-b border-stone-100 bg-white/80 backdrop-blur-md sticky top-0 z-20 gap-4">
+                      <div className="flex items-center gap-2 md:gap-4">
+                        {isFocusMode && (
+                          <button onClick={() => setIsFocusMode(false)} className="p-2 text-stone-400 hover:text-[#DB2777] rounded-full transition-all"><ArrowLeft className="w-5 h-5 md:w-6 md:h-6" /></button>
+                        )}
+                        <h2 className="text-lg md:text-xl font-serif font-bold text-stone-800 italic truncate max-w-[150px] md:max-w-none">
+                          {editingChapterId ? `Chương ${currentNovel.chapters.find(c => c.id === editingChapterId)?.title}` : `Chương ${currentNovel.chapters.length + 1}`}
+                        </h2>
+                      </div>
+                      <div className="flex items-center gap-2 md:gap-4">
+                        <div className="hidden sm:flex items-center bg-stone-100 rounded-full px-3 py-1 gap-3">
+                          <button onClick={() => updateFontSize(Math.max(12, fontSize - 2))} className="text-stone-500 hover:text-[#DB2777] font-bold text-lg p-1">A-</button>
+                          <span className="text-xs font-bold text-stone-400 w-8 text-center">{fontSize}</span>
+                          <button onClick={() => updateFontSize(Math.min(48, fontSize + 2))} className="text-stone-500 hover:text-[#DB2777] font-bold text-lg p-1">A+</button>
+                        </div>
+                        <button onClick={() => setShowDrawer(true)} className="p-2 text-stone-400 hover:text-[#DB2777] rounded-full transition-all" title="Mở ngăn kéo (Mục lục)"><Menu size={20} /></button>
+                        <button onClick={() => setIsFocusMode(!isFocusMode)} className={`p-2 rounded-full transition-all ${isFocusMode ? 'bg-[#DB2777] text-white' : 'text-stone-400 hover:text-[#DB2777]'}`}><Sparkles size={20} /></button>
+                        <button onClick={handleSave} className="px-4 md:px-6 py-2 bg-[#DB2777] text-white rounded-full hover:bg-[#BE185D] transition-all shadow-md font-bold text-xs md:text-sm flex items-center gap-2" title="Lưu chương này vào ngăn kéo"><Save className="w-4 h-4 md:w-[18px] md:h-[18px]" /> Lưu vào ngăn kéo</button>
+                      </div>
+                    </div>
+
+                    {/* Main Editor Body: Full Width */}
+                    <div className="flex-1 flex flex-col p-12 relative">
+                      {isGenerating && (
+                        <div className="absolute inset-0 z-10 bg-white/40 backdrop-blur-[1px] flex flex-col items-center justify-center">
+                          <div className="bg-white/90 backdrop-blur-md p-8 rounded-[2.5rem] shadow-2xl border border-pink-100 flex flex-col items-center gap-4 max-w-sm text-center">
+                            <div className="relative">
+                              <div className="w-16 h-16 border-4 border-pink-100 border-t-[#DB2777] rounded-full animate-spin" />
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <Sparkles size={20} className="text-[#DB2777] animate-pulse" />
+                              </div>
+                            </div>
+                            <div className="w-full">
+                              <p className="text-[#DB2777] font-bold text-sm">
+                                {countdownTime !== null && countdownTime !== (estimatedTime || 15) * 60 
+                                  ? `Đang viết phân đoạn ${Math.min(7, Math.floor(generatedTokens / 2500) + 1)}/7`
+                                  : 'Đang kết nối Proxy...'}
+                              </p>
+                              
+                              <div className="mt-4 flex flex-col items-center">
+                                <div className="flex items-center gap-2 text-2xl font-mono font-bold text-[#DB2777]">
+                                  <span>{generatedTokens.toLocaleString()}</span>
+                                  <span className="text-stone-300">/</span>
+                                  <span className="text-stone-400">19,000</span>
+                                </div>
+                                <p className="text-[10px] text-stone-500 font-bold uppercase tracking-wider">tokens</p>
+                              </div>
+                              
+                              <div className="flex items-center justify-between mt-4 text-[11px] text-stone-500 font-medium px-2">
+                                <span>{countdownTime !== null && ((estimatedTime || 15) * 60 - countdownTime) > 0 
+                                  ? `${Math.round(generatedTokens / ((estimatedTime || 15) * 60 - countdownTime))} tokens/s` 
+                                  : '0 tokens/s'}</span>
+                                <span className="font-mono text-[#DB2777]">
+                                  {countdownTime !== null 
+                                    ? `${Math.floor((((estimatedTime || 15) * 60) - countdownTime) / 60).toString().padStart(2, '0')}:${((((estimatedTime || 15) * 60) - countdownTime) % 60).toString().padStart(2, '0')}s` 
+                                    : '00:00s'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="w-full bg-stone-100 h-2 rounded-full overflow-hidden mt-1 relative">
+                              <motion.div 
+                                animate={{ width: `${Math.min(100, Math.max(0, (generatedTokens / 19000) * 100))}%` }}
+                                transition={{ duration: 0.2 }}
+                                className="h-full bg-gradient-to-r from-[#DB2777] to-[#BE185D]"
+                              />
+                            </div>
+                            <button 
+                              onClick={cancelGeneration}
+                              className="mt-3 text-[10px] font-bold text-stone-400 hover:text-red-500 transition-colors"
+                            >
+                              Hủy quá trình
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <textarea 
+                        value={content || streamingContent || ''} 
+                        onChange={(e) => setContent(e.target.value)}
+                        readOnly={isGenerating}
+                        className={`flex-1 w-full bg-transparent text-[#555555] font-serif leading-[2] focus:outline-none resize-none custom-scrollbar min-h-[500px] ${isGenerating ? 'opacity-70 cursor-not-allowed' : ''}`}
+                        placeholder="Nội dung chương truyện..."
+                        style={{ fontSize: `${fontSize}px` }}
+                      />
+                      
+                      {/* Stats & AI Suggestion Area */}
+                      <div className="mt-8 pt-8 border-t border-stone-100 flex flex-col gap-6">
+                        <div className="flex items-center justify-between">
+                          <div className="flex gap-4 text-[#777777] text-xs italic">
+                            <span>{(content || '').split(/\s+/).filter(Boolean).length} từ</span>
+                            <span>{(content || '').length} ký tự</span>
+                            <span>~{Math.round(((content || '').length) / 4).toLocaleString()} tokens</span>
+                          </div>
+                          <button onClick={() => setShowDirectionModal(true)} disabled={isGenerating} className="text-[#DB2777] font-bold flex items-center gap-1 text-sm hover:underline"><Heart size={16} /> Viết tiếp</button>
+                        </div>
+                        
+                        <div className="flex items-center gap-8">
+                          {/* Decorative Text & Butterfly */}
+                          <div className="flex-1 space-y-2">
+                            <div className="flex items-center gap-2 text-[#EACFD5]">
+                              <Rabbit size={24} className="opacity-50" />
+                              <span className="text-[10px] font-serif italic text-stone-400">"The story continues..."</span>
+                            </div>
+                            <p className="text-xs text-stone-500 font-serif leading-relaxed">
+                              Từng câu chữ được dệt nên từ tâm hồn, nơi những giấc mơ bắt đầu nảy mầm...
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      {/* Drawer: Chapter List */}
+      <AnimatePresence>
+        {showDrawer && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowDrawer(false)}
+              className="absolute inset-0 bg-black/20 backdrop-blur-sm z-40"
+            />
+            <motion.div 
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              className="absolute top-0 right-0 bottom-0 w-80 bg-white shadow-2xl z-50 p-6 flex flex-col border-l border-[#FBCFE8]"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-xl font-bold text-stone-800 flex items-center">
+                  <Menu className="mr-2 text-[#DB2777]" size={24} /> Mục lục
+                </h3>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => {
+                      let isUnsaved = false;
+                      if (content.trim()) {
+                        if (editingChapterId) {
+                          const savedChapter = currentNovel.chapters.find(c => c.id === editingChapterId);
+                          if (savedChapter && savedChapter.content !== content) {
+                            isUnsaved = true;
+                          }
+                        } else {
+                          isUnsaved = true;
+                        }
+                      }
+                      
+                      if (isUnsaved) {
+                        setConfirmConfig({
+                          title: 'Nội dung chưa lưu',
+                          message: 'Nội dung hiện tại chưa lưu sẽ bị mất. Bạn có muốn tiếp tục?',
+                          onConfirm: () => {
+                            setConfirmConfig(null);
+                            setEditingChapterId(null);
+                            setContent('');
+                            setShowDrawer(false);
+                          }
+                        });
+                        return;
+                      }
+                      
+                      setEditingChapterId(null);
+                      setContent('');
+                      setShowDrawer(false);
+                    }}
+                    className="p-2 text-[#DB2777] hover:bg-pink-50 rounded-full transition-colors"
+                    title="Chương mới"
+                  >
+                    <Plus size={24} />
+                  </button>
+                  <button onClick={() => setShowDrawer(false)} className="text-stone-400 hover:text-stone-600"><X size={24} /></button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3">
+                {currentNovel && (currentNovel.chapters || []).length === 0 ? (
+                  <div className="text-center py-10 text-stone-400 italic">Chưa có chương nào</div>
+                ) : (
+                  currentNovel && (currentNovel.chapters || []).map((chapter, index) => (
+                        <div 
+                          key={chapter.id}
+                          className={`group p-4 rounded-2xl border transition-all cursor-pointer ${editingChapterId === chapter.id ? 'bg-[#FDF2F8] border-[#FBCFE8]' : 'bg-stone-50 border-stone-100 hover:border-[#FBCFE8]'}`}
+                        >
+                          <div className="flex justify-between items-start mb-1">
+                            <div 
+                              className="flex-1"
+                              onClick={() => {
+                                let isUnsaved = false;
+                                if (content.trim()) {
+                                  if (editingChapterId) {
+                                    const savedChapter = currentNovel.chapters.find(c => c.id === editingChapterId);
+                                    if (savedChapter && savedChapter.content !== content) {
+                                      isUnsaved = true;
+                                    }
+                                  } else {
+                                    isUnsaved = true;
+                                  }
+                                }
+                                
+                                if (isUnsaved) {
+                                  setConfirmConfig({
+                                    title: 'Nội dung chưa lưu',
+                                    message: 'Nội dung hiện tại chưa lưu sẽ bị mất. Bạn có muốn tiếp tục?',
+                                    onConfirm: () => {
+                                      setConfirmConfig(null);
+                                      setEditingChapterId(chapter.id);
+                                      setContent(chapter.content);
+                                      setShowDrawer(false);
+                                    }
+                                  });
+                                  return;
+                                }
+                                
+                                setEditingChapterId(chapter.id);
+                                setContent(chapter.content);
+                                setShowDrawer(false);
+                              }}
+                            >
+                              <h4 className={`font-bold ${editingChapterId === chapter.id ? 'text-[#DB2777]' : 'text-stone-700'}`}>
+                                Chương {chapter.title}
+                              </h4>
+                              <p className="text-xs text-stone-400 line-clamp-1">{(chapter.content || '').substring(0, 50)}</p>
+                            </div>
+                            <div className="flex gap-1">
+                              <button 
+                                onClick={() => setPreviewChapter(chapter)}
+                                className="p-2 text-stone-400 hover:text-[#DB2777] hover:bg-pink-50 rounded-full transition-all"
+                                title="Xem lại"
+                              >
+                                <BookOpen size={16} />
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmConfig({
+                                    title: 'Xóa chương',
+                                    message: 'Bạn có chắc chắn muốn xóa chương này không?',
+                                    onConfirm: () => {
+                                      setConfirmConfig(null);
+                                      const updatedChapters = currentNovel.chapters.filter(ch => ch.id !== chapter.id);
+                                      updateCurrentNovel({ chapters: updatedChapters });
+                                      deleteChapterFromFirebase(currentNovel.id, chapter.id);
+                                      if (editingChapterId === chapter.id) {
+                                        setEditingChapterId(null);
+                                        setContent('');
+                                      }
+                                    }
+                                  });
+                                }}
+                                className="p-2 text-stone-300 hover:text-red-500 transition-all"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Chapter Preview Modal */}
+      <AnimatePresence>
+        {previewChapter && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setPreviewChapter(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ y: 50, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 50, opacity: 0 }}
+              className="relative bg-white rounded-3xl p-8 max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6 border-b pb-4">
+                <h3 className="text-2xl font-bold text-stone-800">Chương {previewChapter.title}</h3>
+                <button onClick={() => setPreviewChapter(null)} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar pr-4 text-stone-700 font-serif text-lg leading-relaxed whitespace-pre-wrap">
+                {previewChapter.content}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Custom Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center"
+            >
+              <div className="w-20 h-20 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-stone-800 mb-2">Xóa cuốn sổ?</h3>
+              <p className="text-stone-500 mb-8">Hành động này không thể hoàn tác. Bạn có chắc chắn muốn xóa cuốn sổ này không?</p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="flex-1 py-3 px-6 rounded-xl font-bold text-stone-500 hover:bg-stone-100 transition-colors"
+                >
+                  Hủy
+                </button>
+                <button 
+                  onClick={() => deleteNovel(deleteConfirmId)}
+                  className="flex-1 py-3 px-6 rounded-xl font-bold bg-red-500 text-white hover:bg-red-600 transition-colors shadow-lg shadow-red-500/20"
+                >
+                  Xóa ngay
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Plot Suggestion Prompt */}
+      <AnimatePresence>
+        {showPlotPrompt && (
+          <motion.div 
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[150] w-[90%] max-w-2xl"
+          >
+            <div className="bg-white/95 backdrop-blur-xl border border-[#FBCFE8] shadow-2xl rounded-3xl p-6 relative">
+              <button 
+                onClick={() => setShowPlotPrompt(false)}
+                className="absolute top-4 right-4 p-1 text-stone-400 hover:text-stone-600 transition-colors"
+              >
+                <X size={20} />
+              </button>
+              <h4 className="text-[#DB2777] font-bold mb-3 flex items-center gap-2">
+                <Sparkles size={18} />
+                Lên kế hoạch cho chương tiếp theo
+              </h4>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-400 uppercase mb-1 ml-1">Ý tưởng cốt truyện (Plot)</label>
+                  <textarea 
+                    value={userPlot}
+                    onChange={(e) => setUserPlot(e.target.value)}
+                    placeholder="Nhập ý tưởng của bạn (để trống nếu muốn AI tự triển khai)..."
+                    className="w-full p-4 bg-stone-50 border border-stone-100 rounded-2xl focus:ring-2 focus:ring-[#DB2777] outline-none text-sm resize-none h-24 custom-scrollbar"
+                  />
+                </div>
+                
+                <div className="flex gap-4 items-end">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-stone-400 uppercase mb-1 ml-1">Độ dài chương tiếp theo (số chữ)</label>
+                    <input 
+                      type="number"
+                      value={nextChapterLength}
+                      onChange={(e) => setNextChapterLength(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder={`Mặc định: ${currentNovel?.chapterLength || 1000}`}
+                      className="w-full p-3 bg-stone-50 border border-stone-100 rounded-xl focus:ring-2 focus:ring-[#DB2777] outline-none text-sm"
+                    />
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowPlotPrompt(false);
+                      handleGenerate();
+                    }}
+                    className="px-8 py-3 bg-[#DB2777] text-white rounded-xl hover:bg-[#BE185D] transition-all shadow-lg shadow-pink-100 font-bold flex items-center gap-2"
+                  >
+                    <Send size={18} />
+                    <span>Sáng tác ngay</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-stone-400 italic">* Hệ thống sẽ tuân thủ nghiêm ngặt độ dài và ý tưởng bạn yêu cầu.</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Reopen Plot Prompt Toggle (Rabbit Icon) */}
+      {!showPlotPrompt && currentNovelId && activeTab === 'editor' && (
+        <div className="fixed bottom-8 left-8 z-[150] flex flex-col gap-3">
+          <motion.button
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            onClick={() => setShowPlotPrompt(true)}
+            className="p-2 bg-white text-[#DB2777] rounded-full shadow-lg border border-pink-50 hover:scale-110 transition-transform group relative"
+            title="Gợi ý Plot cho chương sau"
+          >
+            <Sparkles size={16} />
+            {userPlot && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-green-500 rounded-full border border-white" />
+            )}
+          </motion.button>
+
+          <motion.button
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            onClick={() => {
+              setShowGossipGroup(true);
+              if (npcComments.length === 0) handleGenerateGossip();
+            }}
+            className="p-2 bg-white text-[#DB2777] rounded-full shadow-lg border border-pink-50 hover:scale-110 transition-transform group"
+            title="Hội nhóm NPC bàn tán"
+          >
+            <Heart size={16} className="fill-[#DB2777]" />
+          </motion.button>
+        </div>
+      )}
+
+      {/* Gossip Group Modal */}
+      <AnimatePresence>
+        {showGossipGroup && (
+          <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowGossipGroup(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-2xl h-[80vh] bg-white rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col border border-pink-100"
+              style={{
+                backgroundImage: currentNovel?.npcGlobalBackground ? `url(${currentNovel.npcGlobalBackground})` : 'none',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center'
+              }}
+            >
+              <div className={`p-6 flex justify-between items-center border-b border-pink-100 ${currentNovel?.npcGlobalBackground ? 'bg-white/80 backdrop-blur-md' : 'bg-white'}`}>
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-pink-50 text-[#DB2777] rounded-2xl">
+                    <Users size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-stone-800">Hội Nhóm Lắm Chuyện</h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <p className="text-[10px] text-stone-400 font-medium uppercase tracking-wider">{currentNovel.npcCount || 500} NPC đang bàn tán</p>
+                      <div className="flex gap-1">
+                        {[500, 5000].map(count => (
+                          <button 
+                            key={count}
+                            onClick={() => updateCurrentNovel({ npcCount: count })}
+                            className={`text-[8px] px-1.5 py-0.5 rounded-full border transition-all ${currentNovel.npcCount === count ? 'bg-[#DB2777] text-white border-[#DB2777]' : 'bg-white text-stone-400 border-stone-200 hover:border-[#DB2777]'}`}
+                          >
+                            {count}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={handleGenerateGossip}
+                    disabled={isGeneratingGossip}
+                    className="p-3 text-[#DB2777] hover:bg-pink-50 rounded-2xl transition-all disabled:opacity-50"
+                    title="Làm mới bình luận"
+                  >
+                    <Sparkles size={20} className={isGeneratingGossip ? 'animate-spin' : ''} />
+                  </button>
+                  <button onClick={() => setShowGossipGroup(false)} className="p-3 text-stone-400 hover:text-stone-600 hover:bg-stone-100 rounded-2xl transition-all">
+                    <X size={24} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                {isGeneratingGossip ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-10">
+                    <div className="w-16 h-16 border-4 border-pink-100 border-t-[#DB2777] rounded-full animate-spin mb-6" />
+                    <h4 className="text-xl font-bold text-stone-700 mb-2">Đang tạo NPC...</h4>
+                    <p className="text-stone-400 mb-6">Đã tạo: {npcProgress}/5000</p>
+                    <div className="w-full bg-stone-200 rounded-full h-2.5 mb-6">
+                      <div className="bg-[#DB2777] h-2.5 rounded-full" style={{ width: `${(npcProgress / 5000) * 100}%` }}></div>
+                    </div>
+                    <button 
+                      onClick={cancelGossipGeneration}
+                      className="px-6 py-2 bg-white text-stone-500 hover:text-red-500 hover:bg-red-50 rounded-full font-bold shadow-sm border border-stone-200 transition-all"
+                    >
+                      Hủy kết nối
+                    </button>
+                  </div>
+                ) : npcComments.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-10">
+                    <MessageSquare size={64} className="text-stone-200 mb-6" />
+                    <h4 className="text-xl font-bold text-stone-400 mb-2">Chưa có ai bàn tán</h4>
+                    <p className="text-stone-300">Hãy viết xong một chương để các NPC có chuyện để nói!</p>
+                  </div>
+                ) : (
+                  (npcComments || []).map((comment) => (
+                    <motion.div 
+                      key={comment.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className="flex gap-4 group"
+                    >
+                      <img src={comment.npcAvatar} alt={comment.npcName} className="w-12 h-12 rounded-2xl shadow-md border-2 border-white flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="bg-white/90 backdrop-blur-sm p-4 rounded-3xl rounded-tl-none shadow-sm border border-pink-50 group-hover:shadow-md transition-shadow">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-stone-800 text-sm">{comment.npcName}</span>
+                              <span className="px-2 py-0.5 bg-pink-50 text-[#DB2777] text-[10px] font-bold rounded-full uppercase tracking-tighter">{comment.npcRole}</span>
+                            </div>
+                            <span className="text-[10px] text-stone-400">{comment.timestamp}</span>
+                          </div>
+                          <p className="text-stone-600 text-sm leading-relaxed">{comment.content}</p>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))
+                )}
+              </div>
+
+              <div className={`p-6 border-t border-pink-100 ${currentNovel?.npcGlobalBackground ? 'bg-white/80 backdrop-blur-md' : 'bg-white'}`}>
+                <div className="flex gap-3">
+                  <input 
+                    type="text" 
+                    placeholder="Bạn cũng muốn tham gia cãi nhau? (Tính năng sắp ra mắt)" 
+                    disabled
+                    className="flex-1 p-4 bg-stone-50 border border-stone-100 rounded-2xl text-sm outline-none opacity-50 cursor-not-allowed"
+                  />
+                  <button disabled className="p-4 bg-stone-200 text-stone-400 rounded-2xl cursor-not-allowed">
+                    <Send size={20} />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Direction Selection Modal */}
+      <AnimatePresence>
+        {showDirectionModal && (
+          <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl"
+            >
+              <h3 className="text-xl font-bold text-stone-800 mb-6 text-center">Chọn hướng triển khai</h3>
+              <div className="space-y-3">
+                {directions.map(dir => (
+                  <button 
+                    key={dir}
+                    onClick={() => {
+                      setSelectedDirection(dir);
+                      setShowDirectionModal(false);
+                      proceedWithGeneration('continue_same_chapter', dir);
+                    }}
+                    className="w-full py-3 px-4 rounded-xl bg-stone-50 hover:bg-[#FBCFE8] hover:text-[#DB2777] transition-all font-medium flex items-center justify-between group"
+                  >
+                    {dir}
+                    <Heart size={16} className="text-transparent group-hover:text-[#DB2777] transition-colors" />
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {successMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-green-500 text-white px-6 py-3 rounded-2xl shadow-2xl z-[300] flex items-center gap-3"
+          >
+            <div className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center">
+              <Sparkles size={14} />
+            </div>
+            <span className="font-medium">{successMessage}</span>
+            <button onClick={() => setSuccessMessage(null)} className="ml-4 text-white/60 hover:text-white transition-colors"><X size={16} /></button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Global Confirmation Modal */}
+      <AnimatePresence>
+        {confirmConfig && (
+          <div className="fixed inset-0 z-[400] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setConfirmConfig(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center"
+            >
+              <h3 className="text-2xl font-bold text-stone-800 mb-2">{confirmConfig.title}</h3>
+              <p className="text-stone-500 mb-8">{confirmConfig.message}</p>
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setConfirmConfig(null)}
+                  className="flex-1 py-3 px-6 rounded-xl font-bold text-stone-500 hover:bg-stone-100 transition-colors"
+                >
+                  Hủy
+                </button>
+                <button 
+                  onClick={confirmConfig.onConfirm}
+                  className="flex-1 py-3 px-6 rounded-xl font-bold bg-[#DB2777] text-white hover:bg-[#BE185D] transition-colors shadow-lg shadow-[#DB2777]/20"
+                >
+                  Xác nhận
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Error Toast */}
+      <AnimatePresence>
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-2xl shadow-2xl z-[300] flex items-center gap-3"
+          >
+            <X size={20} />
+            <span className="font-medium">{error}</span>
+            <button onClick={() => setError(null)} className="ml-4 underline text-xs">Đóng</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+export default NovelScreen;

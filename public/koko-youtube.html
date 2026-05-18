@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>YouTube của Koko</title>
+<link rel="manifest" href="./koko-manifest.json">
+<meta name="theme-color" content="#F3B4C2">
+<link rel="apple-touch-icon" href="https://i.postimg.cc/59vrSS1b/0c95bb2ec9be4a378f532e76a106887a-(1).jpg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Koko YT">
+<style>
+/* TÍCH HỢP BẢNG MÀU VIBE NGỌT NGÀO CỦA EM */
+:root {
+  --primary-pink: #F3B4C2;
+  --light-pink: #F9C6D4;
+  --bg-light: #FAF9F6;
+  --text-dark: #5a5255;
+  --text-muted: #8c8286;
+  --glass: rgba(255, 255, 255, 0.6);
+}
+* {
+  box-sizing: border-box;
+  margin: 0; padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+body, html {
+  height: 100%; width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-light);
+}
+/* VÙNG CHỨA APP TOÀN CỤC - NƠI USER ĐẶT NỀN */
+#app-wrapper {
+  width: 100%; height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-image: url('https://i.pinimg.com/236x/01/a9/4b/01a94b465b8df4d9d10e5bd7875955a0.jpg');
+  display: flex;
+  flex-direction: column;
+  transition: background-image 0.3s ease;
+}
+/* MAIN CONTENT AREA - CHUYỂN TAB TẠI ĐÂY */
+#main-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 80px;
+}
+/* THANH MENU DƯỚI (BOTTOM NAV) */
+.bottom-nav {
+  height: 70px;
+  width: 100%;
+  position: fixed; bottom: 0;
+  background-color: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(20px);
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  z-index: 100;
+}
+.nav-item {
+  font-size: 24px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.nav-item.active {
+  color: var(--primary-pink);
+  transform: scale(1.1);
+}
+/* THÔNG BÁO API ĐANG LÀM VIỆC */
+#loading-toast {
+  position: fixed; top: 20px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  padding: 10px 20px;
+  border-radius: 20px;
+  color: var(--text-dark);
+  font-size: 14px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+  display: none;
+  z-index: 1000;
+}
+/* THUỘC TÍNH CƠ BẢN */
+.avatar-circle {
+  width: 50px; height: 50px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #fff;
+}
+.pill-button {
+  padding: 8px 16px;
+  border-radius: 20px;
+  background-color: var(--glass);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: var(--text-dark);
+  font-size: 13px;
+  cursor: pointer;
+}
+/* TAB PROFILE CREATOR */
+.page-profile {
+  width: 100%; height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.profile-header {
+  padding: 20px;
+  display: flex; flex-direction: column; align-items: center;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  background: linear-gradient(135deg, var(--light-pink), var(--primary-pink));
+}
+.profile-main-info {
+  display: flex; align-items: center; width: 100%; margin-bottom: 15px;
+}
+.big-avatar {
+  width: 80px; height: 80px;
+  border-radius: 50%; object-fit: cover; margin-right: 20px;
+  cursor: pointer;
+}
+.profile-stats {
+  flex: 1; display: flex; justify-content: space-around; text-align: center;
+}
+.stat-val { font-weight: 700; font-size: 16px; }
+.stat-label { font-size: 12px; color: var(--text-muted); }
+.profile-bio {
+  width: 100%; font-size: 13px; line-height: 1.5; color: white;
+}
+.bio-name { font-weight: 700; margin-bottom: 4px; font-size: 18px; }
+.bio-meta { color: rgba(255,255,255,0.8); margin-bottom: 8px; }
+/* ABA EDIT THUMBNAILS */
+.page-edit-thumbnails {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+}
+.edit-thumb-card {
+  background: var(--glass);
+  margin: 10px 0; border-radius: 15px;
+  border: 1.5px solid #F3B4C2;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+.thumb-npc-avatar {
+  width: 60px; height: 60px;
+  border-radius: 50%; object-fit: cover;
+  margin: 10px;
+}
+.thumb-info {
+  flex: 1; margin-left: 10px;
+}
+.thumb-title { font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+.thumb-view { font-size: 13px; color: var(--text-muted); }
+.btn-edit-pincel {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background-color: var(--primary-pink);
+  color: white; border: none;
+  position: absolute; right: 10px; bottom: 10px;
+  font-size: 18px; cursor: pointer;
+}
+/* TAB CURATED (FAVORITES) */
+.page-curated {
+  padding: 20px;
+  text-align: center;
+}
+.curated-title { font-size: 18px; color: var(--text-dark); margin-bottom: 30px; }
+.horizontal-section {
+  width: 100%; height: 120px;
+  display: flex;
+  align-items: center;
+  overflow-x: auto; gap: 15px;
+  padding: 0 10px;
+  margin-bottom: 30px;
+}
+.curated-avatar {
+  width: 70px; height: 70px;
+  border-radius: 50%; object-fit: cover;
+  flex-shrink: 0;
+  border: 3px solid var(--primary-pink);
+}
+.pill-grid {
+  display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+}
+/* TAB INBOX (LIKE INLINE MESSAGES) */
+.page-inbox {
+  padding: 10px;
+}
+.chat-item {
+  display: flex; align-items: center;
+  padding: 12px; background: rgba(255, 255, 255, 0.4);
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  margin-bottom: 5px; border-radius: 10px;
+}
+.chat-info {
+  flex: 1; margin-left: 15px;
+}
+.chat-name { font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+.chat-preview { font-size: 13px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div id="app-wrapper">
+  <div id="loading-toast">Sách Thế Giới đang xoay chuyển... vui lòng chờ ♡</div>
+  <div id="main-content"></div>
+  <div class="bottom-nav">
+    <div class="nav-item active" onclick="switchTab('profile', this)">👤</div>
+    <div class="nav-item" onclick="switchTab('feed', this)">♡</div>
+    <div class="nav-item" onclick="switchTab('random', this)">🎲</div>
+    <div class="nav-item" onclick="switchTab('inbox', this)">✉</div>
+    <div class="nav-item" onclick="switchTab('profile', this)">⚙</div>
+  </div>
+</div>
+<script>
+const npcImageLinks = [
+  'https://i.postimg.cc/G3NS3ZVY/a922b88856b69ca027ced4e29a399b92.jpg',
+  'https://i.postimg.cc/8C1ZnDJb/9ba3bbbb1217a1ca33a4348dfc42f92e.jpg',
+  'https://i.postimg.cc/9FnXQNpn/e1d0cd594c41440c5e1dadc28f25c69a.jpg'
+];
+const randomNames = ["Yuri_Neko", "Usagi_Hime", "Sakura_Chan", "Pastel_Queen", "Momo_Bear"];
+
+window.deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  window.deferredPrompt = e;
+  const installBtn = document.getElementById('install-btn');
+  if (installBtn) {
+    installBtn.style.display = 'inline-block';
+  }
+});
+
+function switchTab(tabName, element) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  element.classList.add('active');
+  const container = document.getElementById('main-content');
+  showLoadingToast();
+  switch (tabName) {
+    case 'profile': buildProfilePage(container); break;
+    case 'feed': buildFeedPage(container); break;
+    case 'random': buildCuratedPage(container); break;
+    case 'inbox': buildInboxPage(container); break;
+  }
+}
+
+function showLoadingToast() {
+  const toast = document.getElementById('loading-toast');
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 1500);
+}
+
+function buildProfilePage(container) {
+  container.innerHTML = `
+    <div class="page-profile">
+      <div class="profile-header glass">
+        <div class="profile-main-info">
+          <img src="${npcImageLinks[0]}" class="avatar-circle big-avatar" title="Bấm để đổi nền toàn App">
+          <div class="profile-stats">
+            <div class="stat-item"><div class="stat-val">Kkokk</div><div class="stat-label">HPerfil</div></div>
+            <div class="stat-item"><div class="stat-val">100</div><div class="stat-label">Posts</div></div>
+            <div class="stat-item"><div class="stat-val">K1.1</div><div class="stat-label">Followers</div></div>
+          </div>
+        </div>
+        <div class="profile-bio">
+          <div class="bio-name">User | Pink Queen</div>
+          <div class="bio-meta">✧ Nữ | 23 tuổi | 📍Thái Bình</div>
+          <div class="bio-text">Đang lướt app Sách Thế Giới tìm bạn... ♡ #pinkvibe</div>
+        </div>
+        <div style="text-align:center; padding: 15px; display: flex; justify-content: center; gap: 10px;">
+          <button class="pill-button" onclick="changeAppBackground()">Đổi nền App</button>
+          <button id="install-btn" class="pill-button" style="display: none; background: #F3B4C2; color: white; border: none;">Tải App</button>
+        </div>
+      </div>
+    </div>
+  `;
+  // Re-attach event listener after innerHTML
+  setTimeout(() => {
+    document.querySelector('.big-avatar').addEventListener('click', changeAppBackground);
+    
+    // Show install button if prompt is available
+    const installBtn = document.getElementById('install-btn');
+    if (window.deferredPrompt && installBtn) {
+      installBtn.style.display = 'inline-block';
+      installBtn.addEventListener('click', async () => {
+        window.deferredPrompt.prompt();
+        const { outcome } = await window.deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+          console.log('User accepted the install prompt');
+        } else {
+          console.log('User dismissed the install prompt');
+        }
+        window.deferredPrompt = null;
+        installBtn.style.display = 'none';
+      });
+    }
+  }, 50);
+}
+
+function changeAppBackground() {
+  let bgUrl = prompt("Nhập link URL ảnh bạn muốn đặt làm nền toàn App:");
+  if(bgUrl) {
+    document.getElementById('app-wrapper').style.backgroundImage = `url('${bgUrl}')`;
+  }
+}
+
+function buildFeedPage(container) {
+  container.innerHTML = `
+    <div class="page-edit-thumbnails">
+      <div class="onboarding-header glass" style="padding: 10px; font-weight: bold; color: var(--text-dark); text-align: center; border-radius: 10px; margin-bottom: 10px;">Quản lý Thumbnail Post ♡</div>
+      <div class="edit-thumbnails-list"></div>
+    </div>
+  `;
+  const list = document.querySelector('.edit-thumbnails-list');
+  for(let i=0; i<3; i++){
+    const img = npcImageLinks[i % npcImageLinks.length];
+    const name = randomNames[i % randomNames.length];
+    list.innerHTML += `
+      <div class="edit-thumb-card">
+        <img src="${img}" class="thumb-npc-avatar">
+        <div class="thumb-info">
+          <div class="thumb-title">${name}</div>
+          <div class="thumb-view">100k views</div>
+        </div>
+        <button class="btn-edit-pincel" onclick="changePostThumbnail(this)">✎</button>
+      </div>
+    `;
+  }
+}
+
+function changePostThumbnail(element) {
+  showLoadingToast();
+  let bgUrl = prompt("Nhập link URL ảnh Thumbnail mới bạn muốn đặt cho Post này:");
+  if(bgUrl) {
+    element.closest('.edit-thumb-card').querySelector('.thumb-npc-avatar').src = bgUrl;
+    alert("Đã cập nhật Thumbnail Post thành công ♡");
+  }
+}
+
+function buildCuratedPage(container) {
+  container.innerHTML = `
+    <div class="page-curated">
+      <div class="curated-title">Nội dung Curated & Favorited ♡</div>
+      <div class="curated-title" style="font-size:14px; text-align:left;">Nghệ sĩ nghe gần đây</div>
+      <div class="horizontal-section">
+        <img src="${npcImageLinks[1]}" class="curated-avatar">
+        <img src="${npcImageLinks[2]}" class="curated-avatar">
+        <img src="${npcImageLinks[0]}" class="curated-avatar">
+        <img src="${npcImageLinks[1]}" class="curated-avatar">
+      </div>
+      <div class="curated-title" style="font-size:14px; text-align:left;">Ideias de Busca Salvas</div>
+      <div class="pill-grid">
+        <div class="pill-button">✦ Inspiração Aesthetics</div>
+        <div class="pill-button">Coquette Thumbnails</div>
+        <div class="pill-button">Lo-fi Beats</div>
+        <div class="pill-button">Đĩa Nhạc ♡</div>
+      </div>
+    </div>
+  `;
+}
+
+function buildInboxPage(container) {
+  container.innerHTML = `
+    <div class="page-inbox">
+      <div class="onboarding-header glass" style="padding: 10px; font-weight: bold; color: var(--text-dark); text-align: center; border-radius: 10px; margin-bottom: 10px;">Hộp thư nhân duyên ♡</div>
+      <div class="inbox-list"></div>
+    </div>
+  `;
+  const list = document.querySelector('.inbox-list');
+  for(let i=0; i<5; i++){
+    const img = npcImageLinks[i % npcImageLinks.length];
+    const name = randomNames[i % randomNames.length];
+    list.innerHTML += `
+      <div class="chat-item">
+        <img src="${img}" class="avatar-circle chat-avatar">
+        <div class="chat-info">
+          <div class="chat-name">${name}</div>
+          <div class="chat-preview">Rất vui được gặp bạn ngẫu nhiên... ♡</div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// Khởi tạo tab đầu tiên
+switchTab('profile', document.querySelector('.nav-item.active'));
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(registration => {
+      console.log('SW registered: ', registration);
+    }).catch(registrationError => {
+      console.log('SW registration failed: ', registrationError);
+    });
+  });
+}
+</script>
+</body>
+</html>
