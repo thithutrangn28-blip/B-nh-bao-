@@ -4,7 +4,7 @@ import { Settings, MessageCircle, Image as ImageIcon, Phone, Camera, Heart, Tv, 
 
 const pages = [0, 1, 2];
 
-export default function HomeScreen({ openSettings, openKoko, openDating, openYouTube, openLoveShow, openNovel, openKikokoNovel, openRenGram, openKokoRoleplay, openUserProfile, openBanhNho, openCarrd, openCharacterPhone, openApiHub }: { openSettings: () => void, openKoko: () => void, openDating: () => void, openYouTube: () => void, openLoveShow: () => void, openNovel: () => void, openKikokoNovel: () => void, openRenGram: () => void, openKokoRoleplay: () => void, openUserProfile: () => void, openBanhNho: () => void, openCarrd: () => void, openCharacterPhone: () => void, openApiHub: () => void }) {
+export default function HomeScreen({ openSettings, openKoko, openDating, openYouTube, openLoveShow, openNovel, openKikokoNovel, openRenGram, openKokoRoleplay, openUserProfile, openBanhNho, openCarrd, openCharacterPhone, openApiHub, openSnapshots }: { openSettings: () => void, openKoko: () => void, openDating: () => void, openYouTube: () => void, openLoveShow: () => void, openNovel: () => void, openKikokoNovel: () => void, openRenGram: () => void, openKokoRoleplay: () => void, openUserProfile: () => void, openBanhNho: () => void, openCarrd: () => void, openCharacterPhone: () => void, openApiHub: () => void, openSnapshots: () => void }) {
   const [currentPage, setCurrentPage] = useState(0);
   const [appBackground, setAppBackground] = useState(() => localStorage.getItem('home_bg') || '');
   const bgInputRef = useRef<HTMLInputElement>(null);
@@ -184,6 +184,13 @@ export default function HomeScreen({ openSettings, openKoko, openDating, openYou
                     </svg>
                   </div>
                   <span className="text-[11px] font-medium text-gray-700 text-center leading-tight">API Hub</span>
+                </div>
+
+                <div className="flex flex-col items-center gap-1" onClick={openSnapshots}>
+                  <div className="w-[60px] h-[60px] bg-white rounded-[14px] shadow-[0_0_20px_#F9C6D4] flex items-center justify-center text-[#F3B4C2] cursor-pointer active:scale-95 transition-transform">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
+                  </div>
+                  <span className="text-[11px] font-medium text-gray-700 whitespace-nowrap">Snapshots</span>
                 </div>
               </div>
             )}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { X, Check, Loader2, User, Settings as SettingsIcon, Camera, Plus, MessageSquare, Twitter, Instagram } from 'lucide-react';
+import { exportAllData } from '../utils/exportUtils';
 
 export interface ApiSettingsData {
   endpoint: string;
@@ -556,6 +557,20 @@ export default function ApiSettings({
                 {error}
               </div>
             )}
+
+            {/* Data Backup Section */}
+            <div className="space-y-4 pt-6 border-t border-gray-100 mt-6">
+                <h3 className="font-semibold text-gray-800">Sao lưu dữ liệu</h3>
+                <button 
+                  onClick={async () => {
+                    await exportAllData();
+                  }}
+                  className="w-full py-3 bg-[#F9C6D4] text-black rounded-xl font-medium shadow-sm hover:bg-[#f5a1bb] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                >
+                  Xuất dữ liệu JSON
+                </button>
+                <p className="text-xs text-gray-500 text-center">Tải xuống toàn bộ dữ liệu ứng dụng dưới dạng file JSON để sao lưu.</p>
+            </div>
           </div>
         )}
       </div>

@@ -1,20 +1,22 @@
 import { openDB, IDBPDatabase } from 'idb';
+import { createSnapshot } from './snapshotManager';
 
 const DB_NAME = 'banhnho_db';
 const STORE_NAME = 'bot_cards';
 const BG_STORE_NAME = 'backgrounds';
-const STORY_STORE_NAME = 'stories';
-const KIKOKO_STORY_STORE_NAME = 'kikoko_stories';
+export const STORY_STORE_NAME = 'stories';
+export const KIKOKO_STORY_STORE_NAME = 'kikoko_stories';
 const KIKOKO_IG_STORE_NAME = 'kikoko_ig';
 const CHAT_STORE_NAME = 'chat_history';
 const FORUM_STORE_NAME = 'forum_data';
+export const SNAPSHOT_STORE = 'novel_snapshots'; // NEW
 export const PERMANENT_MEM_STORE = 'novel_permanent_mem';
 export const SHORT_TERM_MEM_STORE = 'novel_short_term_mem';
 export const LONG_TERM_MEM_STORE = 'novel_long_term_mem';
 export const LOREBOOK_STORE = 'novel_lorebook';
 export const NPC_PROFILE_STORE = 'npc_profiles';
 export const NPC_CONVO_STORE = 'npc_conversations';
-const VERSION = 17;
+const VERSION = 18; // Incrementing from 17
 
 export async function getDB(): Promise<IDBPDatabase> {
   return openDB(DB_NAME, VERSION, {
@@ -41,6 +43,11 @@ export async function getDB(): Promise<IDBPDatabase> {
         db.createObjectStore(FORUM_STORE_NAME);
       }
       // Smart Memory Stores
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) {
+        const snapshotStore = db.createObjectStore(SNAPSHOT_STORE, { keyPath: 'id', autoIncrement: true });
+        snapshotStore.createIndex('novelId', 'novelId', { unique: false });
+        snapshotStore.createIndex('timestamp', 'timestamp', { unique: false });
+      }
       if (!db.objectStoreNames.contains(PERMANENT_MEM_STORE)) {
         db.createObjectStore(PERMANENT_MEM_STORE, { keyPath: 'id' });
       }
@@ -184,6 +191,16 @@ export async function saveKikokoStory(story: any) {
   const db = await getDB();
   await db.put(KIKOKO_STORY_STORE_NAME, story, story.id);
 }
+
+export async function saveKikokoStoryWithSnapshot(story: any) {
+  await saveKikokoStory(story);
+  try {
+      await createSnapshot(story.id, story);
+  } catch (e) {
+      console.warn('Snapshot failed in saveKikokoStoryWithSnapshot', e);
+  }
+}
+
 
 export async function deleteKikokoStory(id: string) {
   const db = await getDB();
